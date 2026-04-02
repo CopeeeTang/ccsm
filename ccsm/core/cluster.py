@@ -160,15 +160,25 @@ async def name_workflows(
         if wid in wf_by_id:
             wf_by_id[wid].ai_name = name
 
-    # Apply orphan assignments
+    # Apply orphan assignments (append but note: timestamps may become stale)
     remaining_orphans: list[str] = []
+    reassigned_wfs: set[str] = set()
     for sid in cluster.orphans:
         target_wid = assignments.get(sid)
         if target_wid and target_wid in wf_by_id:
             wf_by_id[target_wid].sessions.append(sid)
+            reassigned_wfs.add(target_wid)
         else:
             remaining_orphans.append(sid)
     cluster.orphans = remaining_orphans
+
+    # Recompute session_count is automatic (property). Mark reassigned
+    # workflows as needing timestamp refresh on next extract_workflows() call.
+    # For now, clear stale timestamps so they don't mislead the TUI.
+    for wid in reassigned_wfs:
+        wf = wf_by_id[wid]
+        wf.first_timestamp = None
+        wf.last_timestamp = None
 
     # Update metadata
     from datetime import datetime, timezone

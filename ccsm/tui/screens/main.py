@@ -379,14 +379,25 @@ class MainScreen(Screen):
         self._lineage_signals = dict(lineage_signals) if lineage_signals else {}
         self._workflow_cluster = workflow_cluster
 
+        # Clear stale selected session if it's not in the new dataset
+        if self._selected_session:
+            new_sids = {s.session_id for s in sessions}
+            if self._selected_session.session_id not in new_sids:
+                self._selected_session = None
+                if self._auto_summary_timer is not None:
+                    self._auto_summary_timer.stop()
+                    self._auto_summary_timer = None
+
         # Update panel title
         title = self.query_one("#session-panel .panel-title", Static)
         title.update(f" SESSIONS · {label}")
 
         self._update_session_list()
 
-        # Show workflow overview in detail panel (before any session is selected)
-        if self._workflow_cluster and not self._selected_session:
+        # Show workflow overview or refresh swimlane
+        if self._graph_visible and self._workflow_cluster:
+            self._show_graph()
+        elif self._workflow_cluster and not self._selected_session:
             detail = self.query_one(SessionDetail)
             session_statuses = {s.session_id: s.status for s in self._current_sessions}
             detail.show_workflows(self._workflow_cluster, session_statuses)
@@ -792,9 +803,13 @@ class MainScreen(Screen):
         if not cluster:
             return
 
-        # Build intents map
+        # Snapshot the worktree key to detect stale results
+        snapshot_worktree = cluster.worktree
+
+        # Build intents map from current sessions snapshot
+        sessions_snapshot = list(self._current_sessions)
         intents: dict[str, str] = {}
-        for s in self._current_sessions:
+        for s in sessions_snapshot:
             meta = self._all_meta.get(s.session_id)
             intents[s.session_id] = (
                 (meta.ai_intent if meta else None)
@@ -804,6 +819,13 @@ class MainScreen(Screen):
 
         try:
             updated = name_workflows_sync(cluster, intents)
+
+            # Discard if user switched worktrees while we were running
+            if (self._workflow_cluster is None
+                    or self._workflow_cluster.worktree != snapshot_worktree):
+                logger.debug("AI naming result discarded — worktree changed")
+                return
+
             self._workflow_cluster = updated
             save_workflows(updated)
 

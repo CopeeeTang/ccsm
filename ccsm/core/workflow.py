@@ -34,6 +34,7 @@ def extract_workflows(
     """Group sessions into workflows based on lineage edges.
 
     Algorithm:
+      0. Build implicit edges for COMPACT sessions in the same cwd+branch
       1. Find all root nodes (parent_id is None)
       2. For each root, walk children:
          - DUPLICATE/COMPACT children → extend the chain (same workflow)
@@ -43,6 +44,12 @@ def extract_workflows(
     """
     claimed: set[str] = set()
     workflows: list[Workflow] = []
+
+    # ── Step 0: Build implicit edges for same-cwd+branch sessions ────
+    # COMPACT sessions have no cross-file parent/child links in the DAG.
+    # Group non-FORK sessions by (cwd, branch) and link them by time order
+    # so extract_workflows() can chain them together.
+    _build_implicit_edges(graph, signals)
 
     # ── Step 1: Find roots ────────────────────────────────────────────
     roots = [
@@ -164,6 +171,54 @@ def extract_workflows(
         workflows=workflows,
         orphans=orphans,
     )
+
+
+def _build_implicit_edges(
+    graph: dict[str, SessionLineage],
+    signals: dict[str, LineageSignals],
+) -> None:
+    """Link COMPACT/ROOT sessions sharing the same cwd+branch by time order.
+
+    The lineage DAG only has explicit edges for DUPLICATE sessions.
+    COMPACT sessions are in-file continuations with no cross-file parent.
+    This function groups non-FORK, unlinked sessions by (cwd, branch)
+    and chains them chronologically so extract_workflows() can merge them.
+    """
+    from collections import defaultdict
+
+    groups: dict[tuple, list[str]] = defaultdict(list)
+    for sid, sig in signals.items():
+        node = graph.get(sid)
+        if not node:
+            continue
+        # Only link sessions that have no parent yet and are not FORK
+        if node.parent_id is not None or node.lineage_type == LineageType.FORK:
+            continue
+        if sig.cwd is None and sig.git_branch is None:
+            continue
+        key = (sig.cwd, sig.git_branch)
+        groups[key].append(sid)
+
+    for key, sids in groups.items():
+        if len(sids) < 2:
+            continue
+        # Sort by first_message_at
+        sids.sort(
+            key=lambda s: signals[s].first_message_at
+            if s in signals and signals[s].first_message_at
+            else datetime.max.replace(tzinfo=timezone.utc)
+        )
+        # Link consecutive sessions: first → second → third
+        for i in range(1, len(sids)):
+            prev_sid = sids[i - 1]
+            curr_sid = sids[i]
+            prev_node = graph[prev_sid]
+            curr_node = graph[curr_sid]
+            # Only link if curr has no parent yet (avoid overwriting explicit edges)
+            if curr_node.parent_id is None:
+                curr_node.parent_id = prev_sid
+                if curr_sid not in prev_node.children:
+                    prev_node.children.append(curr_sid)
 
 
 def _earliest(

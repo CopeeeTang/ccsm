@@ -1,8 +1,8 @@
 """Session card widget for the middle panel.
 
 Two-line compact layout:
-  Line 1: status icon + title (highlight white) + relative time (right-aligned, muted)
-  Line 2: 📝 first user intent (Stone-400) + 💬 message count (right-aligned, muted)
+  Line 1: title (white) + status tag (colored dot+text) + lineage badge + relative time (right-aligned)
+  Line 2: 📝 AI intent / first user content (muted) + 💬 message count (right-aligned)
 """
 
 from __future__ import annotations
@@ -21,6 +21,15 @@ _LINEAGE_BADGES = {
     "fork": ("[#60a5fa]⑂[/]", 2),       # blue fork icon
     "compact": ("[#a78bfa]⟳[/]", 2),    # purple compact icon
     "duplicate": ("[#f87171]⊕[/]", 2),  # red duplicate icon
+}
+
+# Status inline tags: (icon, label, color)
+_STATUS_TAGS = {
+    Status.ACTIVE: ("●", "Active", "#22c55e"),
+    Status.BACKGROUND: ("◐", "Back", "#3b82f6"),
+    Status.IDEA: ("◇", "Idea", "#a855f7"),
+    Status.DONE: ("○", "Done", "#78716c"),
+    Status.NOISE: ("·", "Noise", "#44403c"),
 }
 
 
@@ -46,23 +55,6 @@ def _relative_time(dt: datetime | None) -> str:
     if days < 30:
         return f"{days}d ago"
     return f"{days // 30}mo ago"
-
-
-_STATUS_ICONS = {
-    Status.ACTIVE: "●",
-    Status.BACKGROUND: "◐",
-    Status.IDEA: "◇",
-    Status.DONE: "○",
-    Status.NOISE: "·",
-}
-
-_STATUS_COLORS = {
-    Status.ACTIVE: "#22c55e",
-    Status.BACKGROUND: "#3b82f6",
-    Status.IDEA: "#a855f7",
-    Status.DONE: "#78716c",
-    Status.NOISE: "#44403c",
-}
 
 
 def _truncate(text: str, max_len: int) -> str:
@@ -99,60 +91,75 @@ class SessionCard(Static):
         self._lineage_type = lineage_type
 
     def render(self) -> str:
-        """Render the card content as Rich markup (two-line layout)."""
+        """Render the card content as Rich markup (two-line layout).
+
+        Line 1: title + status_tag + lineage_badge + relative_time (right-aligned)
+        Line 2: intent + message count (right-aligned)
+        """
         s = self.session
         w = self.size.width or 60
 
-        # ── Line 1: status icon + title + relative time ───────────────
-        status_icon = _STATUS_ICONS.get(s.status, "?")
-        status_color = _STATUS_COLORS.get(s.status, "#78716c")
+        # ── Line 1: title + status tag + lineage badge + relative time ──
 
         title = s.display_title
         if self.meta and self.meta.name:
             title = self.meta.name
+
+        # Status tag: "●Active" etc.
+        tag_icon, tag_label, tag_color = _STATUS_TAGS.get(
+            s.status, ("?", "?", "#78716c")
+        )
+        tag_markup = f" [{tag_color}]{tag_icon}{tag_label}[/]"
+        tag_visible_len = 1 + len(tag_icon) + len(tag_label)  # space + icon + label
 
         # Lineage badge (pain point #1: distinguish fork/compact/dup)
         badge_markup = ""
         badge_width = 0
         if self._lineage_type and self._lineage_type in _LINEAGE_BADGES:
             badge_markup_tpl, badge_width = _LINEAGE_BADGES[self._lineage_type]
-            badge_markup = badge_markup_tpl + " "
-            badge_width += 1  # space after badge
+            badge_markup = " " + badge_markup_tpl
+            badge_width += 1  # space before badge
+
+        # Running indicator (prepended to title)
+        running_prefix = ""
+        running_prefix_width = 0
+        if s.is_running:
+            running_prefix = "[bold #22c55e]⚡[/] "
+            running_prefix_width = 3  # ⚡(2cols) + space
 
         time_str = _relative_time(s.last_timestamp)
         time_visible_len = len(time_str)
-        # icon(1) + space(1) + badge_width + title; reserve gap(2) + time on the right
-        max_title_len = max(10, w - 4 - badge_width - time_visible_len)
+
+        # Budget: running_prefix + title + tag + badge + gap(2) + time
+        max_title_len = max(
+            10,
+            w - running_prefix_width - tag_visible_len - badge_width - 2 - time_visible_len,
+        )
         title_truncated = _truncate(title, max_title_len)
         title_display = rich_escape(title_truncated)
         title_visible_len = len(title_truncated)
 
-        # left side: icon(1) + space(1) + badge_width + title_visible_len
-        left_len = 2 + badge_width + title_visible_len
+        # Compute padding between left content and right-aligned time
+        left_len = running_prefix_width + title_visible_len + tag_visible_len + badge_width
         padding1 = max(1, w - left_len - time_visible_len)
 
         line1 = (
-            f"[{status_color}]{status_icon}[/] "
-            f"{badge_markup}"
+            f"{running_prefix}"
             f"[#e7e5e4]{title_display}[/]"
+            f"{tag_markup}"
+            f"{badge_markup}"
             f"{' ' * padding1}"
             f"[#78716c]{rich_escape(time_str)}[/]"
         )
 
-        # ── Line 2: intent + 💬 msg count (right-aligned) ─────────────
+        # ── Line 2: intent + 💬 msg count (right-aligned) ────────────
         # Right part visible text and markup
         count_str = str(s.message_count)
-        if s.is_running:
-            right_text = f"\u26a1 \U0001f4ac {count_str}"   # "⚡ 💬 42"
-            right_markup = f"[bold #22c55e]\u26a1[/] [#78716c]\U0001f4ac {count_str}[/]"
-        else:
-            right_text = f"\U0001f4ac {count_str}"           # "💬 42"
-            right_markup = f"[#78716c]\U0001f4ac {count_str}[/]"
+        right_text = f"\U0001f4ac {count_str}"           # "💬 42"
+        right_markup = f"[#78716c]\U0001f4ac {count_str}[/]"
         right_visible_len = len(right_text)
 
         # Left part: "  📝 \"intent...\""
-        # indent(2) + 📝(~2 wide in terminal) + space(1) + opening-quote(1) = 6 prefix
-        # closing-quote(1) = 1 suffix
         prefix_len = 7   # visible terminal width of '  📝 "' (emoji=2cols + 2spaces + space + quote)
         suffix_len = 1   # closing quote
         max_intent_len = max(5, w - prefix_len - suffix_len - 1 - right_visible_len)

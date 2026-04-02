@@ -38,7 +38,7 @@ def render_workflow_list(
     Returns:
         Rich markup string for mounting in a Static widget
     """
-    if not cluster or not cluster.workflows:
+    if not cluster or (not cluster.workflows and not cluster.orphans):
         return "  [#78716c italic]No workflows detected yet[/]"
 
     statuses = session_statuses or {}

@@ -1,10 +1,11 @@
-"""Full-screen dual-axis swimlane timeline.
+"""Compact swimlane timeline for middle panel or full-screen.
 
 Horizontal: time (day columns)
 Vertical: workflow lanes (one per compact chain)
 
-Replaces session_graph.py with a more informative visualization
-that clearly separates compact chains from forks.
+Works in both:
+  - Middle panel (narrow, ~35% width) — compact single-line lanes
+  - Full-screen (wide) — expanded lanes with fork branches
 
 Design:
   ● = session start  ◇ = compact continuation  ◆ = fork
@@ -16,35 +17,55 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from rich.markup import escape as rich_escape
+from textual.message import Message
 from textual.widgets import Static
 
 from ccsm.models.session import Status, Workflow, WorkflowCluster
 
+# Status tags for swimlane labels
+_STATUS_TAGS = {
+    Status.ACTIVE: ("●", "#22c55e"),
+    Status.BACKGROUND: ("◐", "#3b82f6"),
+    Status.IDEA: ("◇", "#a855f7"),
+    Status.DONE: ("○", "#78716c"),
+    Status.NOISE: ("·", "#44403c"),
+}
+
 
 class Swimlane(Static):
-    """Full-screen swimlane timeline widget."""
+    """Swimlane timeline widget — supports narrow and wide modes."""
 
     DEFAULT_CSS = """
     Swimlane {
-        padding: 1 2;
+        padding: 1 1;
     }
     """
+
+    class WorkflowSelected(Message):
+        """Emitted when a workflow lane is clicked."""
+
+        def __init__(self, workflow: Workflow) -> None:
+            self.workflow = workflow
+            super().__init__()
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
         self._cluster: Optional[WorkflowCluster] = None
         self._statuses: dict[str, Status] = {}
         self._current_session_id: Optional[str] = None
+        self._compact_mode: bool = False  # True when embedded in narrow panel
 
     def set_data(
         self,
         cluster: WorkflowCluster,
         statuses: Optional[dict[str, Status]] = None,
         current_session_id: Optional[str] = None,
+        compact: bool = False,
     ) -> None:
         self._cluster = cluster
         self._statuses = statuses or {}
         self._current_session_id = current_session_id
+        self._compact_mode = compact
         self.update(self._render())
 
     def _render(self) -> str:
@@ -71,10 +92,14 @@ class Swimlane(Static):
         if span < 1:
             span = 3600  # Minimum 1 hour span
 
-        # ── Time axis header ─────────────────────────────────────
-        LANE_WIDTH = 60
-        LABEL_WIDTH = 16
+        # ── Adaptive width based on mode ────────────────────────
+        available_width = self.size.width or 60
+        if self._compact_mode:
+            LANE_WIDTH = max(20, available_width - 4)  # Narrow: use most of available width
+        else:
+            LANE_WIDTH = max(40, min(80, available_width - 20))
 
+        # ── Time axis header ─────────────────────────────────────
         header = _build_time_header(min_t, max_t, LANE_WIDTH)
         lines.append(f" {header}")
         lines.append("")
@@ -85,30 +110,73 @@ class Swimlane(Static):
                 wf, min_t, span, LANE_WIDTH,
                 self._statuses, self._current_session_id,
             )
-            name = rich_escape(wf.display_name)
-            has_active = any(
-                self._statuses.get(sid) == Status.ACTIVE
-                for sid in wf.sessions
-            )
-            name_fmt = f"[bold #22c55e]{name}[/]" if has_active else f"[#a8a29e]{name}[/]"
-            lines.append(f" {lane_line}  {name_fmt}")
 
-            # Fork branches — fork_branches is list[list[str]]
-            for branch in wf.fork_branches[:2]:
-                fork_label = branch[0][:8] if branch else "?"
-                lines.append(f" {'':>{LANE_WIDTH}}  [#60a5fa]└─◆ {fork_label}[/]")
+            # Determine dominant status for this workflow
+            wf_status = self._get_workflow_status(wf)
+            tag_icon, tag_color = _STATUS_TAGS.get(wf_status, ("○", "#78716c"))
+
+            # Prefer AI name over auto-generated name
+            name = rich_escape(wf.display_name)
+            if wf_status == Status.ACTIVE:
+                name_fmt = f"[bold #22c55e]{name}[/]"
+            else:
+                name_fmt = f"[#a8a29e]{name}[/]"
+
+            # Session count
+            count_info = f"[#78716c]{wf.session_count}s[/]"
+
+            if self._compact_mode:
+                # Compact: lane on one line, name + tag below
+                lines.append(f" {lane_line}")
+                lines.append(f"   [{tag_color}]{tag_icon}[/] {name_fmt}  {count_info}")
+            else:
+                # Full: lane + name + tag on same line
+                lines.append(
+                    f" {lane_line}  [{tag_color}]{tag_icon}[/] {name_fmt}  {count_info}"
+                )
+
+            # Fork branches (compact mode: skip, full mode: show first 2)
+            if not self._compact_mode:
+                for branch in wf.fork_branches[:2]:
+                    fork_label = branch[0][:8] if branch else "?"
+                    lines.append(
+                        f" {'':>{LANE_WIDTH}}  [#60a5fa]└─◆ {fork_label}[/]"
+                    )
 
             lines.append("")
 
         # ── Orphans ──────────────────────────────────────────────
         if self._cluster.orphans:
-            lines.append(f" [#78716c]+ {len(self._cluster.orphans)} standalone sessions[/]")
+            lines.append(
+                f" [#78716c]+ {len(self._cluster.orphans)} standalone sessions[/]"
+            )
 
         # ── Legend ───────────────────────────────────────────────
         lines.append("")
-        lines.append(" [#78716c]● start  ◇ compact  ◆ fork  ━ chain  [bold #fb923c]● current[/][/]")
+        if self._compact_mode:
+            lines.append(
+                " [#78716c]● start  ◇ compact  [bold #fb923c]● current[/][/]"
+            )
+        else:
+            lines.append(
+                " [#78716c]● start  ◇ compact  ◆ fork  ━ chain  "
+                "[bold #fb923c]● current[/][/]"
+            )
 
         return "\n".join(lines)
+
+    def _get_workflow_status(self, wf: Workflow) -> Status:
+        """Determine the dominant status of a workflow."""
+        # Check all sessions in the workflow (chain + forks)
+        all_sids = list(wf.sessions)
+        for branch in wf.fork_branches:
+            all_sids.extend(branch)
+
+        # Priority: ACTIVE > BACKGROUND > IDEA > DONE
+        for status in [Status.ACTIVE, Status.BACKGROUND, Status.IDEA, Status.DONE]:
+            if any(self._statuses.get(sid) == status for sid in all_sids):
+                return status
+        return Status.DONE
 
 
 def _build_time_header(
