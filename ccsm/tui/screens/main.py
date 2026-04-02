@@ -267,6 +267,11 @@ class MainScreen(Screen):
                     session.total_user_chars = info.total_user_chars
                     session.all_slash_commands = info.all_slash_commands
 
+                    # Propagate JSONL title metadata (audit fix P2-2)
+                    session.custom_title = info.custom_title
+                    session.ai_title_from_cc = info.ai_title_from_cc
+                    session.forked_from_session = info.forked_from_session
+
                     # Enrich with display_name and running state
                     if hasattr(self, '_display_names') and session.session_id in self._display_names:
                         session.display_name = self._display_names[session.session_id]
@@ -277,8 +282,8 @@ class MainScreen(Screen):
                 except Exception as e:
                     logger.debug("Skip session %s: %s", session.session_id, e)
 
-            # Classify
-            classify_all(parsed, self._all_meta)
+            # Classify (pass running info for kind-based BACKGROUND detection)
+            classify_all(parsed, self._all_meta, all_running=self._running)
 
             # ── Lineage scanning (pain points #1, #5, #6, #7) ──
             lineage_types: dict[str, str] = {}
