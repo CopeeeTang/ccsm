@@ -26,7 +26,7 @@ from ccsm.core.discovery import (
 )
 from ccsm.core.index import IndexEntry, SessionIndex
 from ccsm.core.lineage import LineageSignals, parse_lineage_signals
-from ccsm.core.meta import load_all_meta, load_meta, load_summary, lock_title
+from ccsm.core.meta import load_all_meta, load_meta, load_summary, lock_title, save_workflows
 from ccsm.core.parser import (
     get_last_assistant_messages,
     parse_session_info,
@@ -34,7 +34,7 @@ from ccsm.core.parser import (
 )
 from ccsm.core.summarizer import generate_ai_title_sync, summarize_session
 from ccsm.core.status import classify_all
-from ccsm.models.session import Project, SessionInfo, SessionMeta, Status, Worktree
+from ccsm.models.session import Project, SessionInfo, SessionMeta, Status, WorkflowCluster, Worktree
 from ccsm.tui.widgets.session_detail import SessionDetail
 from ccsm.tui.widgets.session_list import SessionListPanel
 from ccsm.tui.widgets.worktree_tree import WorktreeTree
@@ -78,6 +78,8 @@ class MainScreen(Screen):
         self._lineage_types: dict[str, str] = {}  # session_id → "fork"/"compact"/"duplicate"
         self._session_index = SessionIndex()  # Pain point #3,4
         self._graph_visible: bool = False  # Pain point #8: graph toggle
+        self._workflow_cluster: Optional[WorkflowCluster] = None  # v2: workflow data
+        self._ai_cluster_timer = None  # Timer for background AI clustering
 
     def compose(self) -> ComposeResult:
         yield Static("⬡ CCSM — Claude Code Session Manager", id="header-bar")
@@ -317,6 +319,25 @@ class MainScreen(Screen):
                 ))
             self._session_index.update_entries(index_entries)
 
+            # ── Build workflow cluster from lineage (v2) ──
+            from ccsm.core.lineage import build_lineage_graph
+            from ccsm.core.workflow import extract_workflows
+            graph = build_lineage_graph(lineage_signals_local)
+            wf_titles = {}
+            for s in parsed:
+                meta_s = self._all_meta.get(s.session_id)
+                wf_titles[s.session_id] = (
+                    (meta_s.name if meta_s and meta_s.name else None)
+                    or s.display_title
+                )
+            wf_cluster = extract_workflows(
+                graph, lineage_signals_local, wf_titles, label, ""
+            )
+            # Mark active workflows
+            active_sids = {s.session_id for s in parsed if s.status == Status.ACTIVE}
+            for wf in wf_cluster.workflows:
+                wf.is_active = any(sid in active_sids for sid in wf.sessions)
+
             # Extract last thoughts for non-noise sessions (performance)
             last_thoughts: dict[str, str] = {}
             for session in parsed:
@@ -331,7 +352,7 @@ class MainScreen(Screen):
 
             self.app.call_from_thread(
                 self._on_sessions_parsed, parsed, last_thoughts, label,
-                lineage_types, lineage_signals_local,
+                lineage_types, lineage_signals_local, wf_cluster,
             )
         except Exception as e:
             logger.warning("Failed to parse sessions: %s", e)
@@ -343,6 +364,7 @@ class MainScreen(Screen):
         label: str,
         lineage_types: dict[str, str] | None = None,
         lineage_signals: dict[str, LineageSignals] | None = None,
+        workflow_cluster: Optional[WorkflowCluster] = None,
     ) -> None:
         """Update UI with parsed sessions."""
         self._current_sessions = sessions
@@ -350,12 +372,27 @@ class MainScreen(Screen):
         self._last_thoughts = dict(last_thoughts)
         self._lineage_types = dict(lineage_types) if lineage_types else {}
         self._lineage_signals = dict(lineage_signals) if lineage_signals else {}
+        self._workflow_cluster = workflow_cluster
 
         # Update panel title
         title = self.query_one("#session-panel .panel-title", Static)
         title.update(f" SESSIONS · {label}")
 
         self._update_session_list()
+
+        # Show workflow overview in detail panel (before any session is selected)
+        if self._workflow_cluster and not self._selected_session:
+            detail = self.query_one(SessionDetail)
+            session_statuses = {s.session_id: s.status for s in self._current_sessions}
+            detail.show_workflows(self._workflow_cluster, session_statuses)
+
+        # Schedule silent AI naming after 2s (non-blocking)
+        if self._ai_cluster_timer:
+            self._ai_cluster_timer.stop()
+        if self._workflow_cluster and self._workflow_cluster.workflows:
+            self._ai_cluster_timer = self.set_timer(
+                2.0, self._try_ai_workflow_naming
+            )
 
     # ── Session selection ───────────────────────────────────────────────────
 
@@ -693,52 +730,89 @@ class MainScreen(Screen):
     # ── Graph view ────────────────────────────────────────────────────
 
     def action_toggle_graph(self) -> None:
-        """Toggle session graph view in the detail panel (pain point #8)."""
+        """Toggle swimlane timeline view in the detail panel (pain point #8)."""
         self._graph_visible = not self._graph_visible
-        if self._graph_visible and self._selected_session:
+        if self._graph_visible:
             self._show_graph()
-        elif not self._graph_visible and self._selected_session:
+        elif self._selected_session:
             self._load_session_detail(self._selected_session)
-        elif self._graph_visible:
-            self.notify("Select a session first", severity="warning")
-            self._graph_visible = False
+        elif self._workflow_cluster:
+            detail = self.query_one(SessionDetail)
+            session_statuses = {s.session_id: s.status for s in self._current_sessions}
+            detail.show_workflows(self._workflow_cluster, session_statuses)
 
     def _show_graph(self) -> None:
-        """Build and display session graph from lineage data."""
-        from ccsm.core.lineage import build_lineage_graph
-        from ccsm.tui.widgets.session_graph import SessionGraph
+        """Build and display swimlane timeline from workflow data."""
+        from ccsm.tui.widgets.swimlane import Swimlane
 
-        if not self._lineage_signals:
-            self.notify("No lineage data — select a worktree first", severity="warning")
+        if not self._workflow_cluster:
+            self.notify("No workflow data — select a worktree first", severity="warning")
             self._graph_visible = False
             return
-
-        graph = build_lineage_graph(self._lineage_signals)
-        titles: dict[str, str] = {}
-        timestamps = {}
-        for sid, sig in self._lineage_signals.items():
-            meta = self._all_meta.get(sid)
-            session = next(
-                (s for s in self._current_sessions if s.session_id == sid),
-                None,
-            )
-            titles[sid] = (
-                (meta.name if meta and meta.name else None)
-                or (session.display_title if session else sid[:8])
-            )
-            timestamps[sid] = sig.last_message_at
 
         detail = self.query_one(SessionDetail)
         detail.remove_children()
 
-        widget = SessionGraph()
+        session_statuses = {s.session_id: s.status for s in self._current_sessions}
+
+        widget = Swimlane()
         detail.mount(widget)
         widget.set_data(
-            graph,
-            titles,
-            timestamps,
+            self._workflow_cluster,
+            statuses=session_statuses,
             current_session_id=(
                 self._selected_session.session_id
                 if self._selected_session else None
             ),
         )
+
+    def _try_ai_workflow_naming(self) -> None:
+        """Trigger background AI workflow naming if not already cached."""
+        if not self._workflow_cluster:
+            return
+        # Check if any workflow lacks an ai_name
+        needs_naming = any(
+            wf.ai_name is None for wf in self._workflow_cluster.workflows
+        )
+        if not needs_naming and not self._workflow_cluster.orphans:
+            return
+        self._run_ai_clustering()
+
+    @work(thread=True)
+    def _run_ai_clustering(self) -> None:
+        """Background AI clustering — name workflows and assign orphans."""
+        from ccsm.core.cluster import name_workflows_sync
+
+        cluster = self._workflow_cluster
+        if not cluster:
+            return
+
+        # Build intents map
+        intents: dict[str, str] = {}
+        for s in self._current_sessions:
+            meta = self._all_meta.get(s.session_id)
+            intents[s.session_id] = (
+                (meta.ai_intent if meta else None)
+                or s.first_user_content
+                or ""
+            )
+
+        try:
+            updated = name_workflows_sync(cluster, intents)
+            self._workflow_cluster = updated
+            save_workflows(updated)
+
+            # Refresh detail panel if still showing workflows
+            if not self._selected_session and not self._graph_visible:
+                session_statuses = {
+                    s.session_id: s.status for s in self._current_sessions
+                }
+                self.app.call_from_thread(
+                    lambda: self.query_one(SessionDetail).show_workflows(
+                        updated, session_statuses
+                    )
+                )
+
+            logger.info("AI workflow naming completed: %d workflows", len(updated.workflows))
+        except Exception as e:
+            logger.debug("AI workflow naming failed: %s", e)

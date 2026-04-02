@@ -27,6 +27,7 @@ from ccsm.models.session import (
     SessionMeta,
     SessionSummary,
     Status,
+    WorkflowCluster,
 )
 from ccsm.tui.widgets.session_card import _relative_time
 
@@ -92,6 +93,8 @@ class SessionDetail(VerticalScroll):
         self._meta: Optional[SessionMeta] = None
         self._summary: Optional[SessionSummary] = None
         self._last_replies: list[str] = []
+        self._workflow_cluster: Optional[WorkflowCluster] = None
+        self._session_statuses: Optional[dict[str, Status]] = None
 
     def show_session(
         self,
@@ -112,6 +115,34 @@ class SessionDetail(VerticalScroll):
         self.remove_children()
         self.mount(Static("Select a session to view details", classes="empty-state"))
 
+    def show_workflows(
+        self,
+        cluster: Optional[WorkflowCluster],
+        session_statuses: Optional[dict[str, Status]] = None,
+    ) -> None:
+        """Display workflow overview (when no individual session is selected)."""
+        self._workflow_cluster = cluster
+        self._session_statuses = session_statuses
+        self.remove_children()
+        self._mount_workflows_section()
+
+    def _mount_workflows_section(self) -> None:
+        """Mount the workflows section."""
+        from ccsm.tui.widgets.workflow_list import render_workflow_list
+
+        section = Vertical(classes="detail-section")
+        self.mount(section)
+
+        count = len(self._workflow_cluster.workflows) if self._workflow_cluster else 0
+        title = f"🔗 WORKFLOWS ({count})"
+        section.mount(Static(
+            f"[#a8a29e]─── {title} ───[/]",
+            classes="detail-section-title",
+        ))
+
+        body = render_workflow_list(self._workflow_cluster, self._session_statuses)
+        section.mount(Static(body, classes="detail-section-body"))
+
     def _rebuild(self) -> None:
         """Rebuild detail panel with milestone-based layout."""
         self.remove_children()
@@ -131,6 +162,10 @@ class SessionDetail(VerticalScroll):
 
         # ── Section 4: Claude's last reply ────────────────────────────
         self._mount_last_reply_section()
+
+        # ── Section: Workflows (if available) ──────────────────────
+        if self._workflow_cluster:
+            self._mount_workflows_section()
 
     # ── SESSION description (compressed) ──────────────────────────────
 

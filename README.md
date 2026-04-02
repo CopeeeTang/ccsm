@@ -178,7 +178,8 @@ CCSM never modifies Claude Code's data. All user metadata lives in `~/.ccsm/`:
 | Sidecar Metadata | `docs/shared/research/ccsm-sidecar-metadata.md` | Title lock, lineage serialization, atomic writes |
 | TUI Pipeline | `docs/shared/research/ccsm-tui-pipeline.md` | MainScreen integration, async orchestration, data flow |
 | v1 Plan | `docs/superpowers/plans/2026-04-02-ccsm-resume-painpoints.md` | 9-task TDD plan (completed) |
-| v2 Plan (Swimlane) | `docs/superpowers/plans/2026-04-02-ccsm-workflow-swimlane-v2.md` | Workflow extraction, AI clustering, swimlane visualization |
+| v2 Plan Tasks 1-3 | `docs/superpowers/plans/2026-04-02-ccsm-workflow-swimlane-v2.md` | Workflow/WorkflowCluster models, chain extraction, cache I/O |
+| v2 Plan Tasks 4-7 | `docs/superpowers/plans/2026-04-02-ccsm-v2-tasks-4-7.md` | AI clustering, WorkflowList widget, Swimlane timeline, MainScreen integration |
 
 ## License
 

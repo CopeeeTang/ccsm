@@ -176,33 +176,35 @@ def test_title_lock_survives_roundtrip(tmp_path, monkeypatch):
     assert loaded.title_locked is True
 
 
-def test_graph_widget_renders():
-    """Pain point #8: SessionGraph can render lineage data."""
-    from ccsm.tui.widgets.session_graph import _build_tree
+def test_swimlane_widget_renders():
+    """Pain point #8: Swimlane can render workflow data."""
+    from ccsm.tui.widgets.swimlane import Swimlane, _build_lane
+    from ccsm.models.session import Workflow, WorkflowCluster
 
-    lineages = {
-        "root-1": SessionLineage(
-            session_id="root-1",
-            lineage_type=LineageType.ROOT,
-            children=["fork-1"],
-        ),
-        "fork-1": SessionLineage(
-            session_id="fork-1",
-            lineage_type=LineageType.FORK,
-            parent_id="root-1",
-            depth=1,
-        ),
-    }
-    titles = {"root-1": "main-work", "fork-1": "feature-branch"}
-    timestamps = {
-        "root-1": datetime(2026, 4, 1, 10, 0, tzinfo=timezone.utc),
-        "fork-1": datetime(2026, 4, 1, 12, 0, tzinfo=timezone.utc),
-    }
+    wf = Workflow(
+        workflow_id="wf-root-1",
+        sessions=["root-1", "compact-1"],
+        name="main-work → continued",
+        fork_branches=[["fork-1"]],
+        root_session_id="root-1",
+        first_timestamp=datetime(2026, 4, 1, 10, 0, tzinfo=timezone.utc),
+        last_timestamp=datetime(2026, 4, 1, 12, 0, tzinfo=timezone.utc),
+    )
+    cluster = WorkflowCluster(
+        worktree="main",
+        project="GUI",
+        workflows=[wf],
+        orphans=[],
+    )
 
-    nodes = _build_tree(lineages, titles, timestamps, current_id="fork-1")
-    assert len(nodes) == 2
-    assert nodes[0].session_id == "root-1"
-    assert nodes[0].is_current is False
-    assert nodes[1].session_id == "fork-1"
-    assert nodes[1].is_current is True
-    assert nodes[1].lineage_type == LineageType.FORK
+    # Test lane rendering
+    min_t = datetime(2026, 4, 1, 10, 0, tzinfo=timezone.utc)
+    span = 7200.0  # 2 hours
+    lane = _build_lane(wf, min_t, span, 40, {}, "compact-1")
+    assert "●" in lane or "◇" in lane  # should contain session markers
+
+    # Test widget creation
+    widget = Swimlane()
+    widget.set_data(cluster, current_session_id="compact-1")
+    rendered = widget._render()
+    assert "main-work" in rendered or "wf-root-1" in rendered
