@@ -320,3 +320,58 @@ class Project:
     @property
     def total_count(self) -> int:
         return len(self.all_sessions)
+
+
+@dataclass
+class Workflow:
+    """A chain of related sessions forming a logical unit of work.
+
+    The primary chain is a compact-continuation sequence (A → compact → B → compact → C).
+    Fork branches hang off the chain as side-tracks.
+
+    Rendering in TUI:
+      ━● 登录系统                   3 sessions
+        fix-login → c1 → c2
+                     └─ auth (fork)
+        Apr 1 10:00 — Apr 1 16:00        6h
+    """
+
+    workflow_id: str  # UUID or deterministic hash of root session_id
+    sessions: list[str]  # Ordered session IDs in the compact chain
+    name: Optional[str] = None  # Auto-generated: "title1 → title2 → ..."
+    ai_name: Optional[str] = None  # AI-generated semantic name
+    fork_branches: list[str] = field(default_factory=list)  # Session IDs that forked off
+    root_session_id: Optional[str] = None  # First session in chain
+    first_timestamp: Optional[datetime] = None
+    last_timestamp: Optional[datetime] = None
+    is_active: bool = False  # Any session in chain is currently ACTIVE
+
+    @property
+    def display_name(self) -> str:
+        """Best available workflow name."""
+        return self.ai_name or self.name or self.workflow_id
+
+    @property
+    def session_count(self) -> int:
+        return len(self.sessions) + len(self.fork_branches)
+
+    @property
+    def duration_seconds(self) -> Optional[float]:
+        if self.first_timestamp and self.last_timestamp:
+            return (self.last_timestamp - self.first_timestamp).total_seconds()
+        return None
+
+
+@dataclass
+class WorkflowCluster:
+    """Collection of workflows for a worktree, with AI-enriched metadata.
+
+    Cached at ~/.ccsm/workflows/{worktree_key}.json
+    """
+
+    worktree: str
+    project: str
+    workflows: list[Workflow] = field(default_factory=list)
+    orphans: list[str] = field(default_factory=list)  # Session IDs not in any workflow
+    generated_at: Optional[datetime] = None
+    model: Optional[str] = None  # AI model used for naming/clustering

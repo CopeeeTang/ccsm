@@ -282,3 +282,61 @@ def test_meta_lock_title(tmp_path, monkeypatch):
     loaded = m.load_meta("test-2")
     assert loaded.name == "my-locked-title"
     assert loaded.title_locked is True
+
+
+def test_workflow_cache_round_trip(tmp_path, monkeypatch):
+    """WorkflowCluster survives save → load cycle."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    import importlib
+    from ccsm.core import meta as m
+    importlib.reload(m)
+
+    from datetime import datetime, timezone
+    from ccsm.models.session import Workflow, WorkflowCluster
+
+    cluster = WorkflowCluster(
+        worktree="memory",
+        project="GUI",
+        workflows=[
+            Workflow(
+                workflow_id="wf-s1",
+                sessions=["s1", "s2"],
+                name="fix-bug → fix-v2",
+                ai_name="登录修复",
+                fork_branches=["s3"],
+                root_session_id="s1",
+                first_timestamp=datetime(2026, 4, 1, 10, 0, tzinfo=timezone.utc),
+                last_timestamp=datetime(2026, 4, 1, 12, 0, tzinfo=timezone.utc),
+                is_active=True,
+            ),
+        ],
+        orphans=["s4"],
+        generated_at=datetime(2026, 4, 2, 8, 0, tzinfo=timezone.utc),
+        model="claude-haiku-4.5",
+    )
+
+    m.save_workflows(cluster)
+    loaded = m.load_workflows("GUI", "memory")
+
+    assert loaded is not None
+    assert loaded.worktree == "memory"
+    assert loaded.project == "GUI"
+    assert len(loaded.workflows) == 1
+    wf = loaded.workflows[0]
+    assert wf.workflow_id == "wf-s1"
+    assert wf.sessions == ["s1", "s2"]
+    assert wf.ai_name == "登录修复"
+    assert wf.fork_branches == ["s3"]
+    assert wf.is_active is True
+    assert loaded.orphans == ["s4"]
+    assert loaded.model == "claude-haiku-4.5"
+
+
+def test_workflow_cache_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    import importlib
+    from ccsm.core import meta as m
+    importlib.reload(m)
+
+    result = m.load_workflows("GUI", "nonexistent")
+    assert result is None

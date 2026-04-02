@@ -445,3 +445,80 @@ def lock_title(session_id: str, title: str) -> SessionMeta:
     meta.title_locked = True
     save_meta(meta)
     return meta
+
+
+# ─── Workflow Cache I/O ─────────────────────────────────────────────────────
+
+
+def _workflows_dir() -> Path:
+    d = get_ccsm_dir() / "workflows"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _workflow_path(project: str, worktree: str) -> Path:
+    safe_project = re.sub(r"[^a-zA-Z0-9_-]", "_", project)
+    safe_wt = re.sub(r"[^a-zA-Z0-9_-]", "_", worktree)
+    return _workflows_dir() / f"{safe_project}_{safe_wt}.json"
+
+
+def save_workflows(cluster: "WorkflowCluster") -> None:
+    """Save a WorkflowCluster to the cache directory."""
+    from ccsm.models.session import WorkflowCluster  # noqa: avoid circular at module level
+
+    data = {
+        "worktree": cluster.worktree,
+        "project": cluster.project,
+        "orphans": cluster.orphans,
+        "generated_at": _dt_to_iso(cluster.generated_at),
+        "model": cluster.model,
+        "workflows": [],
+    }
+    for wf in cluster.workflows:
+        data["workflows"].append({
+            "workflow_id": wf.workflow_id,
+            "sessions": wf.sessions,
+            "name": wf.name,
+            "ai_name": wf.ai_name,
+            "fork_branches": wf.fork_branches,
+            "root_session_id": wf.root_session_id,
+            "first_timestamp": _dt_to_iso(wf.first_timestamp),
+            "last_timestamp": _dt_to_iso(wf.last_timestamp),
+            "is_active": wf.is_active,
+        })
+
+    path = _workflow_path(cluster.project, cluster.worktree)
+    _atomic_write_json(path, data)
+
+
+def load_workflows(project: str, worktree: str) -> "Optional[WorkflowCluster]":
+    """Load a cached WorkflowCluster, or return None if not cached."""
+    from ccsm.models.session import Workflow, WorkflowCluster
+
+    path = _workflow_path(project, worktree)
+    data = _safe_read_json(path)
+    if data is None:
+        return None
+
+    workflows = []
+    for wd in data.get("workflows", []):
+        workflows.append(Workflow(
+            workflow_id=wd.get("workflow_id", ""),
+            sessions=wd.get("sessions", []),
+            name=wd.get("name"),
+            ai_name=wd.get("ai_name"),
+            fork_branches=wd.get("fork_branches", []),
+            root_session_id=wd.get("root_session_id"),
+            first_timestamp=_iso_to_dt(wd.get("first_timestamp")),
+            last_timestamp=_iso_to_dt(wd.get("last_timestamp")),
+            is_active=wd.get("is_active", False),
+        ))
+
+    return WorkflowCluster(
+        worktree=data.get("worktree", worktree),
+        project=data.get("project", project),
+        workflows=workflows,
+        orphans=data.get("orphans", []),
+        generated_at=_iso_to_dt(data.get("generated_at")),
+        model=data.get("model"),
+    )

@@ -24,7 +24,12 @@
 - **Milestone timeline** — Rule-based (free, instant) or LLM-powered (haiku, ~12s) phase extraction
 - **Breakpoint** — "Where was I?" highlighted in orange, the single most useful info for context restoration
 - **AI Title & Intent** — Haiku generates short titles (≤8 Chinese chars) and one-line summaries, cached to sidecar
-- **Search** — Press `/` for fuzzy search across title, intent, branch, and session ID
+- **Full-text Search** — Press `/` for fuzzy search across title, intent, content, branch, tags (powered by in-memory SessionIndex, no count limits)
+- **Lineage Detection** — Automatic fork/compact/duplicate relationship detection across sessions
+- **Session Graph** — Press `g` to toggle DAG visualization showing session relationships (fork=◆, compact=◇, duplicate=◉)
+- **Timestamp Fix** — Sessions sort by last actual message time, not file modification time (prevents "peeking" from changing order)
+- **Duplicate Detection** — Identifies sessions from concurrent SSH terminals (same cwd+branch, <5min gap)
+- **Title Lock** — `lock_title()` stores titles in CCSM sidecar, immune to Claude Code's 64KB tail window crashes
 - **Resume** — Press `r` to jump back into a session via `claude --resume`
 - **Archive** — Press `D` to mark sessions as DONE
 - **MCP Server** — Expose sessions to Claude Code itself for self-aware context management
@@ -49,14 +54,16 @@ ccsm
 ```
 ccsm/
 ├── core/                   # Backend logic (no UI dependencies)
-│   ├── discovery.py        # Scan ~/.claude/projects/ for sessions & worktrees
-│   ├── parser.py           # JSONL parser + XML sanitization
+│   ├── discovery.py        # Scan ~/.claude/projects/ for sessions & worktrees + detect_duplicates()
+│   ├── parser.py           # JSONL parser + XML sanitization + parse_session_timestamps()
+│   ├── lineage.py          # NEW: Fork/compact/dup detection, DAG construction
+│   ├── index.py            # NEW: Persistent full-text fuzzy search index (SessionIndex)
 │   ├── status.py           # Auto-classify sessions: ACTIVE/BACK/IDEA/DONE/NOISE
 │   ├── milestones.py       # Rule-based milestone extraction (6 signal types)
 │   ├── summarizer.py       # Dual-mode summarizer (extract / LLM via haiku)
-│   └── meta.py             # Sidecar metadata read/write (~/.ccsm/)
+│   └── meta.py             # Sidecar metadata read/write (~/.ccsm/) + lock_title(), lineage serialization
 ├── models/
-│   └── session.py          # Dataclasses: SessionInfo, SessionMeta, Milestone, Breakpoint
+│   └── session.py          # Dataclasses: SessionInfo, SessionMeta, Milestone, Breakpoint + LineageType, SessionLineage
 ├── tui/
 │   ├── app.py              # Textual App entry point
 │   ├── screens/main.py     # MainScreen — panel layout, keybindings, async workers
@@ -64,7 +71,8 @@ ccsm/
 │   │   ├── worktree_tree.py    # Left panel: project/worktree tree
 │   │   ├── session_list.py     # Middle panel: tab bar + session cards
 │   │   ├── session_card.py     # 2-line compact card with right-aligned metadata
-│   │   └── session_detail.py   # Right panel: SESSION/MILESTONES/BREAKPOINT/LAST REPLY
+│   │   ├── session_detail.py   # Right panel: SESSION/MILESTONES/BREAKPOINT/LAST REPLY
+│   │   └── session_graph.py    # NEW: DAG visualization widget (lineage graph)
 │   └── styles/
 │       └── claude_native.tcss  # Stone/Orange theme inspired by Claude's design language
 ├── mcp/
@@ -78,7 +86,8 @@ ccsm/
 | Key | Action |
 |-----|--------|
 | `1` `2` `3` `4` | Switch to ACTIVE / BACK / IDEA / DONE tab |
-| `/` | Toggle search input (fuzzy match) |
+| `/` | Full-text fuzzy search (backed by SessionIndex) |
+| `g` | Toggle session lineage graph view |
 | `r` | Resume selected session (`claude --resume`) |
 | `s` | Trigger AI summary (haiku LLM) |
 | `D` | Archive selected session (mark as DONE) |
@@ -98,6 +107,16 @@ ccsm/
 - Produces semantic milestones with clear phase labels and actionable breakpoints
 - Auto-triggers after 1.5s hover on a session card (silent, no notification)
 - Results cached to `~/.ccsm/summaries/` — subsequent loads are instant
+
+## Lineage Detection
+
+CCSM automatically detects relationships between sessions and constructs a DAG (directed acyclic graph). Press `g` to visualize it. Three relationship types are detected:
+
+- **Fork** — Detected by `(branch)` suffix in display name or a compact summary appearing as the first message. Displayed as ◆ in the graph.
+- **Compact** — Detected by `compact_boundary` system entries in the JSONL session file. Displayed as ◇ in the graph.
+- **Duplicate** — Same `(cwd, git_branch)` with <5min time gap between sessions, typically caused by concurrent SSH terminals. Displayed as ◉ in the graph.
+
+Lineage metadata is serialized to the CCSM sidecar (`~/.ccsm/meta/`) and reloaded on subsequent launches.
 
 ### AI Title Generation
 - Generates ≤8 Chinese character (or ≤20 English character) titles
@@ -130,6 +149,21 @@ CCSM never modifies Claude Code's data. All user metadata lives in `~/.ccsm/`:
 - [Rich](https://rich.readthedocs.io/) ≥ 13.0.0
 - Claude Code sessions in `~/.claude/projects/`
 - (Optional) Local LLM proxy at `http://127.0.0.1:4142` with `claude-haiku-4.5` model
+
+## Version History
+
+### v1.0 — Lineage & Search (2026-04-02)
+- Lineage detection (fork/compact/duplicate) with DAG visualization
+- Full-text fuzzy search index (SessionIndex)
+- Timestamp semantics fix (last_message_at replaces file mtime)
+- Title lock mechanism (sidecar-based, crash-immune)
+- Duplicate session detection for multi-SSH scenarios
+- 33 new tests, all passing
+
+### v0.1 — Initial Release
+- Three-panel TUI with status tabs and milestone timeline
+- AI-powered summarization and title generation
+- MCP server integration
 
 ## License
 
