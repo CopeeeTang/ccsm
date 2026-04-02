@@ -303,7 +303,7 @@ def test_workflow_cache_round_trip(tmp_path, monkeypatch):
                 sessions=["s1", "s2"],
                 name="fix-bug → fix-v2",
                 ai_name="登录修复",
-                fork_branches=["s3"],
+                fork_branches=[["s3", "s3a"]],
                 root_session_id="s1",
                 first_timestamp=datetime(2026, 4, 1, 10, 0, tzinfo=timezone.utc),
                 last_timestamp=datetime(2026, 4, 1, 12, 0, tzinfo=timezone.utc),
@@ -326,7 +326,7 @@ def test_workflow_cache_round_trip(tmp_path, monkeypatch):
     assert wf.workflow_id == "wf-s1"
     assert wf.sessions == ["s1", "s2"]
     assert wf.ai_name == "登录修复"
-    assert wf.fork_branches == ["s3"]
+    assert wf.fork_branches == [["s3", "s3a"]]
     assert wf.is_active is True
     assert loaded.orphans == ["s4"]
     assert loaded.model == "claude-haiku-4.5"

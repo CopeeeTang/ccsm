@@ -114,6 +114,11 @@ class SessionInfo:
     total_user_chars: int = 0  # Sum of all user message character lengths
     all_slash_commands: bool = False  # True if every user message starts with '/'
 
+    # Extracted from JSONL metadata entries
+    custom_title: Optional[str] = None       # From JSONL `custom-title` type entry
+    ai_title_from_cc: Optional[str] = None   # From JSONL `ai-title` type entry
+    forked_from_session: Optional[str] = None  # From forkedFrom.sessionId field
+
     # Extracted from history.jsonl
     display_name: Optional[str] = None  # Name shown in /resume
 
@@ -133,8 +138,18 @@ class SessionInfo:
 
     @property
     def display_title(self) -> str:
-        """Best available title for display."""
-        return self.display_name or self.slug or self.session_id[:8]
+        """Best available title for display.
+
+        Priority: display_name (from history.jsonl) > custom_title (user-set in JSONL)
+        > ai_title_from_cc (AI-generated title in JSONL) > slug > session_id prefix.
+        """
+        return (
+            self.display_name
+            or self.custom_title
+            or self.ai_title_from_cc
+            or self.slug
+            or self.session_id[:8]
+        )
 
 
 @dataclass
@@ -340,7 +355,7 @@ class Workflow:
     sessions: list[str]  # Ordered session IDs in the compact chain
     name: Optional[str] = None  # Auto-generated: "title1 → title2 → ..."
     ai_name: Optional[str] = None  # AI-generated semantic name
-    fork_branches: list[str] = field(default_factory=list)  # Session IDs that forked off
+    fork_branches: list[list[str]] = field(default_factory=list)  # Fork branch chains (each is an ordered list of session IDs)
     root_session_id: Optional[str] = None  # First session in chain
     first_timestamp: Optional[datetime] = None
     last_timestamp: Optional[datetime] = None
@@ -353,7 +368,7 @@ class Workflow:
 
     @property
     def session_count(self) -> int:
-        return len(self.sessions) + len(self.fork_branches)
+        return len(self.sessions) + sum(len(b) for b in self.fork_branches)
 
     @property
     def duration_seconds(self) -> Optional[float]:

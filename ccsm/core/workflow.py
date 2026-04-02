@@ -62,7 +62,7 @@ def extract_workflows(
             continue
 
         chain: list[str] = []
-        forks: list[str] = []
+        forks: list[list[str]] = []
 
         def _walk_chain(sid: str) -> None:
             if sid in claimed:
@@ -87,11 +87,46 @@ def extract_workflows(
                 if not child_node or child_id in claimed:
                     continue
                 if child_node.lineage_type == LineageType.FORK:
-                    forks.append(child_id)
-                    claimed.add(child_id)
+                    # Traverse the fork into its own sub-chain
+                    fork_chain = _walk_fork_branch(child_id)
+                    if fork_chain:
+                        forks.append(fork_chain)
                 else:
                     # DUPLICATE or COMPACT → same chain
                     _walk_chain(child_id)
+
+        def _walk_fork_branch(sid: str) -> list[str]:
+            """Walk a fork root and its COMPACT/DUPLICATE descendants."""
+            branch: list[str] = []
+            stack = [sid]
+            while stack:
+                current = stack.pop(0)
+                if current in claimed:
+                    continue
+                claimed.add(current)
+                branch.append(current)
+                node = graph.get(current)
+                if not node:
+                    continue
+                # Sort children for deterministic order
+                children = sorted(
+                    node.children,
+                    key=lambda c: signals[c].first_message_at
+                    if c in signals and signals[c].first_message_at
+                    else datetime.max.replace(tzinfo=timezone.utc),
+                )
+                for child_id in children:
+                    child_node = graph.get(child_id)
+                    if not child_node or child_id in claimed:
+                        continue
+                    if child_node.lineage_type == LineageType.FORK:
+                        # Nested fork → its own branch
+                        nested = _walk_fork_branch(child_id)
+                        if nested:
+                            forks.append(nested)
+                    else:
+                        stack.append(child_id)
+            return branch
 
         _walk_chain(root_sid)
 
@@ -103,7 +138,9 @@ def extract_workflows(
         auto_name = " → ".join(chain_titles) if chain_titles else None
 
         # ── Compute timestamps ──────────────────────────────────────
-        all_sids = chain + forks
+        all_sids = list(chain)
+        for branch in forks:
+            all_sids.extend(branch)
         first_ts = _earliest(all_sids, signals)
         last_ts = _latest(all_sids, signals)
 

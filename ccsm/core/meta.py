@@ -457,9 +457,15 @@ def _workflows_dir() -> Path:
 
 
 def _workflow_path(project: str, worktree: str) -> Path:
+    import hashlib
+    # Use a hash of the original (project, worktree) tuple to avoid collisions
+    # from lossy character substitution (e.g., "a/b" + "c" vs "a" + "b/c").
     safe_project = re.sub(r"[^a-zA-Z0-9_-]", "_", project)
     safe_wt = re.sub(r"[^a-zA-Z0-9_-]", "_", worktree)
-    return _workflows_dir() / f"{safe_project}_{safe_wt}.json"
+    # Append a short hash of the original values for collision resistance
+    key = f"{project}\0{worktree}"
+    suffix = hashlib.sha256(key.encode()).hexdigest()[:8]
+    return _workflows_dir() / f"{safe_project}--{safe_wt}--{suffix}.json"
 
 
 def save_workflows(cluster: "WorkflowCluster") -> None:
@@ -497,28 +503,34 @@ def load_workflows(project: str, worktree: str) -> "Optional[WorkflowCluster]":
 
     path = _workflow_path(project, worktree)
     data = _safe_read_json(path)
-    if data is None:
+    if data is None or not isinstance(data, dict):
         return None
 
-    workflows = []
-    for wd in data.get("workflows", []):
-        workflows.append(Workflow(
-            workflow_id=wd.get("workflow_id", ""),
-            sessions=wd.get("sessions", []),
-            name=wd.get("name"),
-            ai_name=wd.get("ai_name"),
-            fork_branches=wd.get("fork_branches", []),
-            root_session_id=wd.get("root_session_id"),
-            first_timestamp=_iso_to_dt(wd.get("first_timestamp")),
-            last_timestamp=_iso_to_dt(wd.get("last_timestamp")),
-            is_active=wd.get("is_active", False),
-        ))
+    try:
+        workflows = []
+        for wd in data.get("workflows", []):
+            if not isinstance(wd, dict):
+                continue  # Skip corrupt entries
+            workflows.append(Workflow(
+                workflow_id=wd.get("workflow_id", ""),
+                sessions=wd.get("sessions", []),
+                name=wd.get("name"),
+                ai_name=wd.get("ai_name"),
+                fork_branches=wd.get("fork_branches", []),
+                root_session_id=wd.get("root_session_id"),
+                first_timestamp=_iso_to_dt(wd.get("first_timestamp")),
+                last_timestamp=_iso_to_dt(wd.get("last_timestamp")),
+                is_active=wd.get("is_active", False),
+            ))
 
-    return WorkflowCluster(
-        worktree=data.get("worktree", worktree),
-        project=data.get("project", project),
-        workflows=workflows,
-        orphans=data.get("orphans", []),
-        generated_at=_iso_to_dt(data.get("generated_at")),
-        model=data.get("model"),
-    )
+        return WorkflowCluster(
+            worktree=data.get("worktree", worktree),
+            project=data.get("project", project),
+            workflows=workflows,
+            orphans=data.get("orphans", []),
+            generated_at=_iso_to_dt(data.get("generated_at")),
+            model=data.get("model"),
+        )
+    except (KeyError, ValueError, TypeError, AttributeError) as exc:
+        logger.warning("Corrupt workflow cache for %s/%s: %s", project, worktree, exc)
+        return None
