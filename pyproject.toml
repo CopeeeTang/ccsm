@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ccsm"
+version = "0.1.0"
+description = "Claude Code Session Manager — TUI + MCP plugin for managing Claude Code sessions"
+requires-python = ">=3.10"
+dependencies = [
+    "textual>=1.0.0",
+    "rich>=13.0.0",
+    "click>=8.0.0",
+    "mcp>=1.0.0",
+]
+
+[project.optional-dependencies]
+llm = ["anthropic>=0.40.0"]
+dev = ["pytest>=7.0.0", "pytest-asyncio>=0.21.0"]
+
+[project.scripts]
+ccsm = "ccsm.cli.main:cli"
+
+[project.entry-points."mcp.servers"]
+ccsm = "ccsm.mcp.server:serve"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["ccsm*"]

@@ -1,0 +1,413 @@
+/* ── Claude Native Theme ────────────────────────────────────────────────────
+ * Primary:    #fb923c (orange-400)
+ * Background: #1c1917 (stone-900)
+ * Panel BG:   #292524 (stone-800)
+ * Text:       #e7e5e4 (stone-200)
+ * Secondary:  #a8a29e (stone-400)
+ * Muted:      #78716c (stone-500)
+ * Border:     #44403c (stone-700)
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/* ── Global ──────────────────────────────────────────────────────────────── */
+
+Screen {
+    background: #1c1917;
+    color: #e7e5e4;
+}
+
+/* ── Three-Panel Layout ─────────────────────────────────────────────────── */
+
+#main-container {
+    layout: horizontal;
+    height: 1fr;
+    width: 100%;
+}
+
+/* ── Left Panel: Worktree Tree ──────────────────────────────────────────── */
+
+#worktree-panel {
+    width: 15%;
+    min-width: 18;
+    background: #292524;
+    border-right: solid #44403c;
+    padding: 0;
+}
+
+#worktree-panel .panel-title {
+    dock: top;
+    height: 3;
+    content-align: center middle;
+    background: #1c1917;
+    color: #78716c;
+    text-style: bold;
+    border-bottom: solid #44403c;
+    padding: 0 1;
+}
+
+#worktree-tree {
+    background: #292524;
+    padding: 0 1;
+    scrollbar-size: 1 1;
+}
+
+#worktree-tree > .tree--label {
+    color: #e7e5e4;
+}
+
+#worktree-tree > .tree--cursor {
+    background: #fb923c 20%;
+    color: #fb923c;
+    text-style: bold;
+}
+
+#worktree-tree > .tree--highlight {
+    background: #fb923c 10%;
+}
+
+/* ── Middle Panel: Session List ─────────────────────────────────────────── */
+
+#session-panel {
+    width: 35%;
+    background: #292524;
+    border-right: solid #44403c;
+    padding: 0;
+}
+
+#session-panel .panel-title {
+    dock: top;
+    height: 3;
+    content-align: center middle;
+    background: #1c1917;
+    color: #78716c;
+    text-style: bold;
+    border-bottom: solid #44403c;
+    padding: 0 1;
+}
+
+#session-list-container {
+    background: #292524;
+    padding: 0;
+    scrollbar-size: 1 1;
+}
+
+/* ── Session Card ───────────────────────────────────────────────────────── */
+
+.session-card {
+    height: auto;
+    max-height: 5;
+    padding: 0 1;
+    margin: 0;
+    background: #292524;
+    border-bottom: solid #44403c;
+}
+
+.session-card:hover {
+    background: #44403c 40%;
+}
+
+.session-card.-selected {
+    background: #fb923c 15%;
+    border-left: tall #fb923c;
+}
+
+.session-card .card-title {
+    color: #e7e5e4;
+    text-style: bold;
+}
+
+.session-card .card-meta {
+    color: #a8a29e;
+}
+
+/* ── Status badges ─────────────────────────────────────────────────────── */
+
+.badge-active {
+    color: #22c55e;
+    text-style: bold;
+}
+
+.badge-background {
+    color: #3b82f6;
+}
+
+.badge-idea {
+    color: #a855f7;
+}
+
+.badge-done {
+    color: #78716c;
+}
+
+.badge-noise {
+    color: #44403c;
+}
+
+/* ── Priority badges ────────────────────────────────────────────────────── */
+
+.priority-focus {
+    color: #fb923c;
+    text-style: bold;
+}
+
+.priority-watch {
+    color: #facc15;
+}
+
+.priority-park {
+    color: #78716c;
+}
+
+.priority-hide {
+    color: #44403c;
+}
+
+/* ── Status Group Headers ───────────────────────────────────────────────── */
+
+.status-group-header {
+    height: 1;
+    padding: 0 1;
+    background: #1c1917;
+    color: #a8a29e;
+    text-style: bold;
+    border-bottom: solid #44403c;
+}
+
+/* ── Right Panel: Session Detail ────────────────────────────────────────── */
+
+#detail-panel {
+    width: 50%;
+    background: #292524;
+    padding: 0;
+}
+
+#detail-panel .panel-title {
+    dock: top;
+    height: 3;
+    content-align: center middle;
+    background: #1c1917;
+    color: #78716c;
+    text-style: bold;
+    border-bottom: solid #44403c;
+    padding: 0 1;
+}
+
+#detail-content {
+    background: #292524;
+    padding: 1 2;
+    scrollbar-size: 1 1;
+    height: 1fr;
+}
+
+.detail-section {
+    margin-bottom: 1;
+    padding: 0;
+    height: auto;
+}
+
+.detail-section-title {
+    color: #a8a29e;
+    text-style: bold;
+    margin-bottom: 0;
+    padding: 0;
+    height: auto;
+}
+
+.detail-section-body {
+    color: #e7e5e4;
+    padding: 0 0 0 1;
+    height: auto;
+}
+
+.detail-reply-label {
+    color: #78716c;
+    padding: 0;
+    height: auto;
+}
+
+.detail-reply-content {
+    padding: 1 2;
+    margin: 0;
+    background: #1c1917;
+    color: #e7e5e4;
+    height: auto;
+    max-height: 30;
+    overflow-y: auto;
+}
+
+/* ── Markdown Rendering Quality ──────────────────────────────────────── */
+
+/* Code fences: distinct background for readability */
+.detail-reply-content MarkdownFence {
+    background: #0d0b0a;
+    margin: 1 0;
+    padding: 0;
+}
+
+.detail-reply-content MarkdownFence > Label {
+    padding: 1 2;
+    color: #d4d4d4;
+}
+
+/* Headings: subtle hierarchy */
+.detail-reply-content MarkdownH1 {
+    color: #fb923c;
+    text-style: bold;
+    background: transparent;
+    margin: 1 0;
+}
+
+.detail-reply-content MarkdownH2 {
+    color: #e7e5e4;
+    text-style: bold;
+    background: transparent;
+    margin: 1 0;
+}
+
+.detail-reply-content MarkdownH3 {
+    color: #a8a29e;
+    text-style: bold;
+    background: transparent;
+    margin: 1 0;
+}
+
+/* Paragraphs: proper spacing */
+.detail-reply-content MarkdownParagraph {
+    margin: 0 0 1 0;
+}
+
+/* Lists: proper indentation */
+.detail-reply-content MarkdownBulletList {
+    margin: 0 0 1 0;
+    padding: 0 0;
+}
+
+.detail-reply-content MarkdownOrderedList {
+    margin: 0 0 1 0;
+    padding: 0 0;
+}
+
+/* Block quotes: subtle left border */
+.detail-reply-content MarkdownBlockQuote {
+    background: #292524;
+    border-left: outer #fb923c 40%;
+    margin: 1 0;
+    padding: 0 1;
+}
+
+/* Inline code: warm tone matching theme */
+.detail-reply-content MarkdownBlock > .code_inline {
+    background: #fb923c 12%;
+    color: #fbbf24;
+}
+
+/* ── Breakpoint Box (highlighted) ──────────────────────────────────── */
+
+.detail-breakpoint {
+    margin-bottom: 1;
+    padding: 0;
+    height: auto;
+}
+
+.detail-breakpoint-body {
+    color: #e7e5e4;
+    padding: 1 3;
+    margin: 0 1;
+    background: #fb923c 10%;
+    border: solid #fb923c 40%;
+    height: auto;
+}
+
+/* ── Focus Indicators ───────────────────────────────────────────────────── */
+
+#worktree-panel:focus-within {
+    border-right: solid #e7e5e4;
+}
+
+#session-panel:focus-within {
+    border-right: solid #e7e5e4;
+}
+
+#detail-panel:focus-within {
+    border-left: solid #e7e5e4;
+}
+
+/* ── Footer ──────────────────────────────────────────────────────────────── */
+
+#footer-bar {
+    dock: bottom;
+    height: 1;
+    background: #1c1917;
+    color: #78716c;
+    padding: 0 1;
+}
+
+.footer-key {
+    color: #fb923c;
+    text-style: bold;
+}
+
+.footer-label {
+    color: #78716c;
+}
+
+/* ── Header ──────────────────────────────────────────────────────────────── */
+
+#header-bar {
+    dock: top;
+    height: 1;
+    background: #1c1917;
+    color: #fb923c;
+    text-style: bold;
+    padding: 0 1;
+}
+
+/* ── Loading Indicator ──────────────────────────────────────────────────── */
+
+.loading-indicator {
+    content-align: center middle;
+    color: #78716c;
+    text-style: italic;
+    height: 100%;
+    width: 100%;
+}
+
+/* ── Empty State ─────────────────────────────────────────────────────────── */
+
+.empty-state {
+    content-align: center middle;
+    color: #78716c;
+    text-style: italic;
+    padding: 2;
+    height: auto;
+}
+
+/* ── Status Tab Bar ──────────────────────────────────────────────────────── */
+
+.status-tab-bar {
+    height: 2;
+    padding: 0 1;
+    background: #1c1917;
+    color: #a8a29e;
+    text-style: bold;
+    border-bottom: solid #44403c;
+    dock: top;
+}
+
+/* ── Search Input ───────────────────────────────────────────────────────── */
+
+.search-input {
+    height: 3;
+    margin: 0;
+    padding: 0 1;
+    background: #1c1917;
+    color: #e7e5e4;
+    border: solid #fb923c 40%;
+}
+
+.search-input.-hidden {
+    display: none;
+}
+
+.search-input:focus {
+    border: solid #fb923c;
+}
