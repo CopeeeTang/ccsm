@@ -157,6 +157,15 @@ def build_lineage_graph(
         )
         graph[sid] = node
 
+    # ── Phase 1.5: Mark compact sessions ────────────────────────────────
+    # Sessions with compact_boundary are marked COMPACT (unless already FORK).
+    # Compact sessions are continuations within the same JSONL file, so they
+    # don't have a cross-file parent — but we record the signal for the DAG.
+    for sid, sig in signals_map.items():
+        if sig.has_compact_boundary and graph[sid].lineage_type == LineageType.ROOT:
+            graph[sid].lineage_type = LineageType.COMPACT
+            graph[sid].compact_predecessor = sid  # self-reference: compacted in-place
+
     # ── Phase 2: Detect duplicates ───────────────────────────────────────
     # Group sessions by (cwd, git_branch)
     groups: dict[tuple[Optional[str], Optional[str]], list[str]] = {}
@@ -193,7 +202,9 @@ def build_lineage_graph(
             curr_first = curr_sig.first_message_at
 
             if prev_last is not None and curr_first is not None:
-                gap = abs((curr_first - prev_last).total_seconds())
+                # Negative gap = sessions overlap → definitely duplicate
+                # Small positive gap (< threshold) = near-overlap → likely duplicate
+                gap = (curr_first - prev_last).total_seconds()
                 if gap < _DUPLICATE_GAP_THRESHOLD:
                     graph[curr_sid].lineage_type = LineageType.DUPLICATE
                     graph[curr_sid].parent_id = prev_sid

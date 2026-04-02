@@ -251,6 +251,9 @@ class MainScreen(Screen):
             for session in sessions:
                 try:
                     info = parse_session_info(session.jsonl_path)
+                    # Fix: sync session_id from JSONL content (file stem may differ)
+                    if info.session_id and info.session_id != session.jsonl_path.stem:
+                        session.session_id = info.session_id
                     session.slug = info.slug
                     session.cwd = info.cwd
                     session.git_branch = info.git_branch
@@ -343,12 +346,10 @@ class MainScreen(Screen):
     ) -> None:
         """Update UI with parsed sessions."""
         self._current_sessions = sessions
-        self._last_thoughts.update(last_thoughts)
-        if lineage_types:
-            self._lineage_types.update(lineage_types)
-        # Assign lineage_signals on UI thread (thread-safe)
-        if lineage_signals:
-            self._lineage_signals.update(lineage_signals)
+        # Replace (not merge) to avoid stale data from previous worktree
+        self._last_thoughts = dict(last_thoughts)
+        self._lineage_types = dict(lineage_types) if lineage_types else {}
+        self._lineage_signals = dict(lineage_signals) if lineage_signals else {}
 
         # Update panel title
         title = self.query_one("#session-panel .panel-title", Static)

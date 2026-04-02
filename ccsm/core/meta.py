@@ -324,11 +324,11 @@ def load_meta(session_id: str) -> SessionMeta:
     Returns a default (empty) SessionMeta if the file does not exist or is corrupt.
     """
     d = _safe_read_json(_meta_path(session_id))
-    if d is None:
+    if d is None or not isinstance(d, dict):
         return SessionMeta(session_id=session_id)
     try:
         return _dict_to_meta(d)
-    except (KeyError, ValueError) as exc:
+    except (KeyError, ValueError, TypeError, AttributeError) as exc:
         logger.warning("Corrupt meta for %s, returning default: %s", session_id, exc)
         return SessionMeta(session_id=session_id)
 
@@ -345,11 +345,11 @@ def save_meta(meta: SessionMeta) -> None:
 def load_summary(session_id: str) -> Optional[SessionSummary]:
     """Load cached session summary. Returns None if absent or corrupt."""
     d = _safe_read_json(_summary_path(session_id))
-    if d is None:
+    if d is None or not isinstance(d, dict):
         return None
     try:
         return _dict_to_summary(d)
-    except (KeyError, ValueError) as exc:
+    except (KeyError, ValueError, TypeError, AttributeError) as exc:
         logger.warning(
             "Corrupt summary for %s, returning None: %s", session_id, exc
         )

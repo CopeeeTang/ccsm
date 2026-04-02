@@ -143,8 +143,12 @@ class SessionIndex:
 
         # Known fields for filtering unknown keys from older/newer formats
         known_fields = {f.name for f in IndexEntry.__dataclass_fields__.values()}
+        if not isinstance(data, list):
+            return idx  # Wrong top-level shape (e.g. {} instead of [])
         entries: list[IndexEntry] = []
         for d in data:
+            if not isinstance(d, dict):
+                continue  # Skip non-dict entries (e.g. "bad" string)
             try:
                 ts = d.get("last_message_at")
                 if ts is not None:
