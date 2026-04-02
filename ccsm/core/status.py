@@ -135,10 +135,11 @@ def _is_noise(session: SessionInfo) -> bool:
     return False
 
 
-def _is_background(session: SessionInfo) -> bool:
+def _is_background(session: SessionInfo, running_info: Optional[dict] = None) -> bool:
     """Check BACKGROUND conditions (second inference priority).
 
     BACKGROUND if ANY of:
+    0. running_info.kind is 'bg' / 'daemon' / 'daemon-worker' → direct background
     1. Running AND duration > BACKGROUND_MIN_DURATION_HOURS
     2. slug/display_name contains background keywords (cron, loop, experiment, etc.)
     3. High tool-call density: many messages but few user messages (autonomous work)
@@ -146,6 +147,12 @@ def _is_background(session: SessionInfo) -> bool:
     """
     dur = _duration_hours(session)
     hints = _text_hints(session)
+
+    # Rule 0: PID kind explicitly marks this as a background process
+    if running_info is not None:
+        kind = running_info.get("kind", "")
+        if kind in ("bg", "daemon", "daemon-worker"):
+            return True
 
     # Rule 1: running long session
     if session.is_running and dur is not None and dur >= BACKGROUND_MIN_DURATION_HOURS:
@@ -211,11 +218,17 @@ def _is_idea(session: SessionInfo) -> bool:
     return False
 
 
-def infer_status(session: SessionInfo) -> Status:
+def infer_status(session: SessionInfo, running_info: Optional[dict] = None) -> Status:
     """Infer session status from SessionInfo metadata fields.
 
     Applies rules in priority order: NOISE > BACKGROUND > ACTIVE > IDEA > DONE.
     The first matching rule wins.
+
+    Args:
+        session: Lightweight session metadata.
+        running_info: Optional dict from load_running_sessions() for this session,
+                      containing {"running": True, "kind": ..., "pid": ...}.
+                      Used for BACKGROUND kind detection (Rule 0).
 
     Uses only lightweight fields already present in SessionInfo:
     - message_count, user_message_count
@@ -228,7 +241,7 @@ def infer_status(session: SessionInfo) -> Status:
     if _is_noise(session):
         return Status.NOISE
 
-    if _is_background(session):
+    if _is_background(session, running_info=running_info):
         return Status.BACKGROUND
 
     if _is_active(session):
@@ -254,7 +267,9 @@ def infer_priority(status: Status, meta: Optional[SessionMeta] = None) -> Priori
 
 
 def classify_session(
-    session: SessionInfo, meta: Optional[SessionMeta] = None
+    session: SessionInfo,
+    meta: Optional[SessionMeta] = None,
+    running_info: Optional[dict] = None,
 ) -> tuple[Status, Priority]:
     """Full classification pipeline for a single session.
 
@@ -263,6 +278,12 @@ def classify_session(
     2. Derive priority from status (with meta.priority_override if set).
     3. Update the session object in-place.
 
+    Args:
+        session: The session to classify.
+        meta: Optional user-defined metadata (sidecar).
+        running_info: Optional dict from load_running_sessions() for this session,
+                      containing {"running": True, "kind": ..., "pid": ...}.
+
     Returns:
         (status, priority) tuple.
     """
@@ -270,7 +291,7 @@ def classify_session(
     if meta is not None and meta.status_override is not None:
         status = meta.status_override
     else:
-        status = infer_status(session)
+        status = infer_status(session, running_info=running_info)
 
     # Step 2: Determine priority
     priority = infer_priority(status, meta)
@@ -285,14 +306,28 @@ def classify_session(
 def classify_all(
     sessions: list[SessionInfo],
     all_meta: Optional[dict[str, SessionMeta]] = None,
+    all_running: Optional[dict[str, dict]] = None,
 ) -> None:
     """Classify all sessions in-place.
 
     Looks up per-session metadata from the all_meta dict (keyed by session_id).
     Sessions without metadata are classified using inferred rules only.
+
+    Args:
+        sessions: List of sessions to classify.
+        all_meta: Optional dict mapping session_id → SessionMeta.
+        all_running: Optional dict from load_running_sessions(), mapping
+                     session_id → {"running": True, "kind": ..., "pid": ...}.
+                     Used for BACKGROUND kind detection (Rule 0).
+
+    Note:
+        Callers using main.py should pass all_running from load_running_sessions()
+        to enable kind-based BACKGROUND classification.
     """
     all_meta = all_meta or {}
+    all_running = all_running or {}
 
     for session in sessions:
         meta = all_meta.get(session.session_id)
-        classify_session(session, meta)
+        running_info = all_running.get(session.session_id)
+        classify_session(session, meta, running_info=running_info)

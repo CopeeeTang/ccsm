@@ -7,6 +7,7 @@ session files and builds a lineage DAG (directed acyclic graph).
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,7 +23,12 @@ _COMPACT_SUMMARY_PREFIXES = (
     "Here's a summary of the conversation",
     "Here is a summary of our conversation",
     "Here's a summary of our conversation",
+    # v3+ compact summaries
+    "This session is being continued from a previous conversation",
 )
+
+# Branch suffix pattern: "(branch)" or "(Branch 2)" etc., case-insensitive
+_BRANCH_SUFFIX = re.compile(r'\(branch(?:\s+\d+)?\)\s*$', re.IGNORECASE)
 
 # Maximum gap (seconds) between sessions to consider them duplicates
 _DUPLICATE_GAP_THRESHOLD = 300  # 5 minutes
@@ -38,6 +44,7 @@ class LineageSignals:
     session_id: Optional[str] = None
     is_fork: bool = False
     fork_hint: Optional[str] = None
+    fork_source_id: Optional[str] = None  # sessionId from forkedFrom field
     has_compact_boundary: bool = False
     compact_count: int = 0
     last_message_at: Optional[datetime] = None
@@ -67,7 +74,7 @@ def parse_lineage_signals(
     signals = LineageSignals()
 
     # ── Check display_name for branch suffix ─────────────────────────────
-    if display_name and display_name.endswith("(branch)"):
+    if display_name and _BRANCH_SUFFIX.search(display_name):
         signals.is_fork = True
         signals.fork_hint = "display_name_branch_suffix"
 
@@ -100,10 +107,23 @@ def parse_lineage_signals(
             entry_type = entry.get("type", "")
             entry_subtype = entry.get("subtype", "")
 
-            # Compact boundary detection
-            if entry_type == "system" and entry_subtype == "compact_boundary":
+            # Compact boundary detection (including microcompact_boundary subtype)
+            if entry_type == "system" and entry_subtype in (
+                "compact_boundary",
+                "microcompact_boundary",
+            ):
                 signals.compact_count += 1
                 signals.has_compact_boundary = True
+
+            # forkedFrom field detection (any message type)
+            if not signals.is_fork:
+                forked_from = entry.get("forkedFrom")
+                if isinstance(forked_from, dict):
+                    forked_session_id = forked_from.get("sessionId")
+                    if forked_session_id:
+                        signals.is_fork = True
+                        signals.fork_hint = "forkedFrom_field"
+                        signals.fork_source_id = forked_session_id
 
             # Timestamp tracking for user/assistant messages
             if entry_type in ("user", "assistant"):

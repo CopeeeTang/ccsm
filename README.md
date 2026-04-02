@@ -165,6 +165,21 @@ CCSM never modifies Claude Code's data. All user metadata lives in `~/.ccsm/`:
 - AI-powered summarization and title generation
 - MCP server integration
 
+## Documentation
+
+| Document | Path | Content |
+|----------|------|---------|
+| Product Review Guide | `docs/ccsm-product-review-guide.md` | PM/designer experience guide, UI mockups, user journeys |
+| Design Spec | `docs/superpowers/specs/2026-04-01-ccsm-design.md` | 8 pain points, architecture, data model, classification |
+| Architecture Overview | `docs/shared/research/ccsm-architecture-overview.md` | Full pipeline diagram, data flow timing, module dependencies |
+| v1 Implementation Summary | `docs/shared/research/ccsm-v1-implementation-summary.md` | Pain point → fix mapping, new modules, test coverage |
+| Lineage Detection | `docs/shared/research/ccsm-lineage-detection.md` | Fork/compact/duplicate detection, DAG algorithm |
+| Search Index | `docs/shared/research/ccsm-search-index.md` | SessionIndex design, scoring, timestamp fix |
+| Sidecar Metadata | `docs/shared/research/ccsm-sidecar-metadata.md` | Title lock, lineage serialization, atomic writes |
+| TUI Pipeline | `docs/shared/research/ccsm-tui-pipeline.md` | MainScreen integration, async orchestration, data flow |
+| v1 Plan | `docs/superpowers/plans/2026-04-02-ccsm-resume-painpoints.md` | 9-task TDD plan (completed) |
+| v2 Plan (Swimlane) | `docs/superpowers/plans/2026-04-02-ccsm-workflow-swimlane-v2.md` | Workflow extraction, AI clustering, swimlane visualization |
+
 ## License
 
 MIT

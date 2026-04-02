@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -144,11 +145,39 @@ def discover_projects(claude_dir: Path | None = None) -> list[Project]:
     return projects
 
 
-def load_running_sessions(claude_dir: Path | None = None) -> dict[str, bool]:
-    """Read ~/.claude/sessions/ and return {session_id: True} for running sessions.
+def _is_pid_alive(pid: int) -> bool:
+    """Check whether a process with the given PID is still alive.
+
+    Uses os.kill(pid, 0) which sends no signal but validates the PID.
+    Returns False for invalid PIDs or if the process does not exist.
+    """
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        # No such process
+        return False
+    except PermissionError:
+        # Process exists but we don't have permission — still alive
+        return True
+    except OSError:
+        return False
+
+
+def load_running_sessions(claude_dir: Path | None = None) -> dict[str, dict]:
+    """Read ~/.claude/sessions/ and return {session_id: info} for live running sessions.
 
     Each file in sessions/ is a single JSON object with fields:
         pid, sessionId, cwd, startedAt, [kind, entrypoint]
+
+    PID liveness is verified via os.kill(pid, 0). Stale PID files
+    (where the process no longer exists) are silently skipped.
+
+    Returns:
+        dict[str, dict] mapping session_id to:
+            {"running": True, "kind": <str>, "pid": <int>}
     """
     claude_dir = claude_dir or _default_claude_dir()
     sessions_dir = claude_dir / "sessions"
@@ -157,7 +186,7 @@ def load_running_sessions(claude_dir: Path | None = None) -> dict[str, bool]:
         logger.debug("Sessions directory not found: %s", sessions_dir)
         return {}
 
-    running: dict[str, bool] = {}
+    running: dict[str, dict] = {}
 
     for f in sessions_dir.iterdir():
         if f.suffix != ".json":
@@ -165,8 +194,29 @@ def load_running_sessions(claude_dir: Path | None = None) -> dict[str, bool]:
         try:
             data = json.loads(f.read_text(encoding="utf-8"))
             session_id = data.get("sessionId")
-            if session_id:
-                running[session_id] = True
+            if not session_id:
+                continue
+
+            pid = data.get("pid")
+            if pid is not None:
+                try:
+                    pid = int(pid)
+                except (ValueError, TypeError):
+                    pid = None
+
+            # Validate PID liveness; skip stale files
+            if pid is not None and not _is_pid_alive(pid):
+                logger.debug(
+                    "Skipping stale session file %s: PID %d not alive", f.name, pid
+                )
+                continue
+
+            kind = data.get("kind", "interactive")
+            running[session_id] = {
+                "running": True,
+                "kind": kind,
+                "pid": pid,
+            }
         except (json.JSONDecodeError, OSError) as e:
             logger.debug("Failed to read session file %s: %s", f.name, e)
 

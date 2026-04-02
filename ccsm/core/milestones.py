@@ -83,7 +83,35 @@ _QUESTION = re.compile(
 
 # Slash commands that indicate phase transitions
 _SLASH_TRANSITIONS = re.compile(
-    r"^/(spawn|save-session|commit|interview-mode|plan|review|codex-review)",
+    r"^/(spawn|save-session|commit|interview-mode|plan|review|codex-review"
+    r"|branch|compact|resume|init|export|diff|status|tasks|agents|rewind)",
+    re.IGNORECASE,
+)
+
+# ─── English discourse markers ────────────────────────────────────────────────
+
+# English topic shift: user announces a new discussion area
+_TOPIC_SHIFT_EN = re.compile(
+    r"(next[,\s]|let'?s move on|let'?s focus on|moving on|switching to"
+    r"|now let'?s|on to the next|the next (topic|item|thing|step)"
+    r"|let'?s talk about|let'?s discuss|let'?s look at)",
+    re.IGNORECASE,
+)
+
+# English approval / pivot: short confirmation
+_APPROVAL_EN = re.compile(
+    r"^(OK|okay|sure|sounds good|LGTM|approved?|go ahead|that works|perfect"
+    r"|great|looks good|yes|yeah|yep|agreed|confirmed?)\s*[.!]?\s*$",
+    re.IGNORECASE,
+)
+
+# English directive: user tells Claude to execute something
+_DIRECTIVE_EN = re.compile(
+    r"(please implement|please (fix|add|remove|update|refactor|create|write|run|deploy)"
+    r"|go ahead and|can you (implement|fix|add|create|write|run|deploy)"
+    r"|implement (the|this|that)|fix (the|this|that)|let'?s implement"
+    r"|start (implementing|coding|writing)|run the (tests?|pipeline|script)"
+    r"|make (the|it|this|that))",
     re.IGNORECASE,
 )
 
@@ -151,6 +179,15 @@ def _detect_signal(msg: JSONLMessage) -> Optional[str]:
     if _TOPIC_SHIFT.search(clean):
         return "topic_shift"
     if _DIRECTIVE.search(clean):
+        return "directive"
+
+    # ── English fallback patterns ─────────────────────────────────────────
+    # Short English approval (< 30 chars)
+    if len(clean) < 30 and _APPROVAL_EN.match(clean):
+        return "approval"
+    if _TOPIC_SHIFT_EN.search(clean):
+        return "topic_shift"
+    if _DIRECTIVE_EN.search(clean):
         return "directive"
 
     return None

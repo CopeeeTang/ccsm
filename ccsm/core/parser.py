@@ -66,6 +66,8 @@ def _sanitize_content(text: str) -> Optional[str]:
     """
     if not text:
         return text
+    # Remove antml: namespaced tags (e.g. <function_calls>, <invoke>)
+    text = re.sub(r'</?antml:[a-z_]+[^>]{0,200}>', '', text, flags=re.IGNORECASE)
     # Remove complete XML tag blocks (non-greedy, length-bounded to prevent ReDoS)
     text = re.sub(r'<[a-z_:-][^>]{0,200}>.*?</[a-z_:-][^>]{0,50}>', '', text, flags=re.DOTALL | re.IGNORECASE)
     # Remove remaining self-closing and orphan tags
@@ -74,6 +76,9 @@ def _sanitize_content(text: str) -> Optional[str]:
     text = re.sub(
         r'^(Base directory for this skill:?\s*.+|'
         r'This session is being continued.+|'
+        r'If you need specific details from before compaction.+|'
+        r'Recent messages are preserved verbatim.+|'
+        r'Continue the conversation from where it left off.+|'
         r'Caveat: The messages below.+|'
         r'Copied to clipboard.+|'
         r'Compacted \(ctrl.+|'
@@ -207,6 +212,11 @@ def parse_session_info(jsonl_path: Path) -> SessionInfo:
     total_user_chars = 0
     all_slash_commands = True  # Assume true, set false on first non-slash user msg
 
+    # New metadata fields (Task 2+6)
+    custom_title: Optional[str] = None
+    ai_title: Optional[str] = None
+    forked_from: Optional[str] = None
+
     lines = _read_lines(jsonl_path)
 
     for line in lines:
@@ -230,9 +240,33 @@ def parse_session_info(jsonl_path: Path) -> SessionInfo:
                     session_id = sid
             continue
 
-        # Skip non-message lines
         msg_type = data.get("type")
+
+        # ── Parse special metadata entry types ────────────────────────────
+        if msg_type == "custom-title":
+            if custom_title is None:
+                custom_title = data.get("title") or data.get("customTitle")
+            continue
+
+        if msg_type == "ai-title":
+            if ai_title is None:
+                ai_title = data.get("title") or data.get("aiTitle")
+            continue
+
+        # ── Extract forkedFrom from any entry ─────────────────────────────
+        if forked_from is None:
+            fk = data.get("forkedFrom")
+            if isinstance(fk, dict):
+                fk_sid = fk.get("sessionId")
+                if fk_sid:
+                    forked_from = fk_sid
+
+        # Skip non-message lines
         if msg_type not in _MESSAGE_TYPES:
+            continue
+
+        # Skip compact summary messages and meta messages (not real user input)
+        if data.get("isCompactSummary") or data.get("isMeta"):
             continue
 
         # Count messages
@@ -297,6 +331,9 @@ def parse_session_info(jsonl_path: Path) -> SessionInfo:
         first_user_content=first_user_content,
         total_user_chars=total_user_chars,
         all_slash_commands=all_slash_commands,
+        custom_title=custom_title,
+        ai_title_from_cc=ai_title,
+        forked_from_session=forked_from,
     )
 
 
