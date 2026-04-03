@@ -381,7 +381,7 @@ Screen {
     height: auto;
 }
 
-/* ── Status Tab Bar ──────────────────────────────────────────────────────── */
+/* ── Status Tab Bar / Filter Bar ─────────────────────────────────────────── */
 
 .status-tab-bar {
     height: 2;
@@ -391,6 +391,54 @@ Screen {
     text-style: bold;
     border-bottom: solid #44403c;
     dock: top;
+}
+
+/* ── AI Summary Section ─────────────────────────────────────────────────── */
+
+.ai-summary-section {
+    margin-bottom: 1;
+    padding: 0;
+    height: auto;
+}
+
+.ai-summary-section .detail-section-body {
+    padding: 0 0 0 1;
+    height: auto;
+}
+
+/* ── Swimlane in Middle Panel ───────────────────────────────────────────── */
+
+#session-list-container Swimlane {
+    padding: 1 1;
+    height: auto;
+}
+
+/* ── Collapsible Sections (WHAT WAS DONE, LAST EXCHANGE) ───────────────── */
+
+#detail-content Collapsible {
+    background: #292524;
+    border: none;
+    padding: 0;
+    margin-bottom: 1;
+    height: auto;
+}
+
+#detail-content Collapsible > CollapsibleTitle {
+    color: #a8a29e;
+    background: #1c1917;
+    padding: 0 1;
+    text-style: bold;
+    height: auto;
+}
+
+#detail-content Collapsible > CollapsibleTitle:hover {
+    background: #44403c 40%;
+    color: #e7e5e4;
+}
+
+#detail-content Collapsible > Contents {
+    padding: 0 0 0 1;
+    height: auto;
 }
 
 /* ── Search Input ───────────────────────────────────────────────────────── */

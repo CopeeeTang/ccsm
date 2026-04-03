@@ -644,8 +644,18 @@ class MainScreen(Screen):
                 last_msgs = get_last_assistant_messages(session.jsonl_path, count=3)
                 replies = [m.content for m in last_msgs if m.content]
 
+                # Re-parse compact and detail data so LLM refresh doesn't lose them
+                compact_parsed = None
+                if session.compact_summaries:
+                    from ccsm.core.compact_parser import parse_compact_summary
+                    compact_parsed = parse_compact_summary(session.compact_summaries[-1])
+
+                from ccsm.core.parser import parse_session_detail
+                detail_data = parse_session_detail(session.jsonl_path)
+
                 self.app.call_from_thread(
-                    self._on_detail_loaded, session, meta, summary, replies
+                    self._on_detail_loaded, session, meta, summary, replies,
+                    detail_data, compact_parsed,
                 )
                 if not silent:
                     self.app.call_from_thread(
