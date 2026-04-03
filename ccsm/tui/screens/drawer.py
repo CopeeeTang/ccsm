@@ -59,7 +59,7 @@ class SessionDetailDrawer(ModalScreen):
     def compose(self):
         with Vertical(id="drawer-panel"):
             yield Static(
-                " [#fb923c bold]DETAIL[/]  [#78716c]Esc to close[/]",
+                " [#d97757 bold]DETAIL[/]  [#78716c]Esc to close[/]",
                 classes="drawer-title",
             )
             yield SessionDetail()

@@ -135,10 +135,10 @@ class MainScreen(Screen):
                 )
                 yield SessionListPanel()
         yield Static(
-            " [#fb923c]↑↓[/] Navigate  "
-            "[#fb923c]0-4[/] Filter  [#fb923c]/[/] Search  "
-            "[#fb923c]Enter[/] Detail  [#fb923c]r[/] Resume  [#fb923c]s[/] AI  "
-            "[#fb923c]g[/] View  [#fb923c]D[/] Archive  [#fb923c]q[/] Quit",
+            " [#d97757]↑↓[/] Navigate  "
+            "[#d97757]0-4[/] Filter  [#d97757]/[/] Search  "
+            "[#d97757]Enter[/] Detail  [#d97757]r[/] Resume  [#d97757]s[/] AI  "
+            "[#d97757]g[/] View  [#d97757]D[/] Archive  [#d97757]q[/] Quit",
             id="footer-bar",
         )
 

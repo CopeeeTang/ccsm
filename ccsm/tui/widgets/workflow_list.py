@@ -52,7 +52,7 @@ def render_workflow_list(
             statuses.get(sid) == Status.ACTIVE
             for sid in list(wf.sessions) + fork_sids
         )
-        icon = "[#22c55e]●[/]" if has_active else "[#78716c]○[/]"
+        icon = "[#788c5d]●[/]" if has_active else "[#78716c]○[/]"
 
         # Title line: icon + name + session count
         name = rich_escape(wf.display_name)
@@ -66,15 +66,15 @@ def render_workflow_list(
             chain_text = wf.name
             if len(chain_text) > 50:
                 chain_text = chain_text[:47] + "…"
-            lines.append(f"   [#a8a29e]{rich_escape(chain_text)}[/]")
+            lines.append(f"   [#b0aea5]{rich_escape(chain_text)}[/]")
 
         # Fork branches (if any) — fork_branches is list[list[str]]
         for branch in wf.fork_branches[:3]:
             fork_label = branch[0][:8] if branch else "?"
             branch_len = f" ({len(branch)} sessions)" if len(branch) > 1 else ""
-            lines.append(f"   [#a8a29e]        └─[/] [#60a5fa]{rich_escape(fork_label)}{branch_len}[/] [#60a5fa](fork)[/]")
+            lines.append(f"   [#b0aea5]        └─[/] [#6a9bcc]{rich_escape(fork_label)}{branch_len}[/] [#6a9bcc](fork)[/]")
         if len(wf.fork_branches) > 3:
-            lines.append(f"   [#a8a29e]        … +{len(wf.fork_branches) - 3} more forks[/]")
+            lines.append(f"   [#b0aea5]        … +{len(wf.fork_branches) - 3} more forks[/]")
 
         # Time span
         time_str = _format_span(wf.first_timestamp, wf.last_timestamp)

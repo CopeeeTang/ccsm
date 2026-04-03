@@ -6,13 +6,16 @@ Supports two view modes (toggled by 'g' key):
 
 Filter bar at top: ALL | 🟢Active | 🔵Back | 🟣Idea | ⚪Done
 Cards/lanes below show filtered content.
+Date dividers inserted between sessions on different days.
 """
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Literal, Optional
 
 from rich.cells import cell_len
+from rich.markup import escape as rich_escape
 
 from textual.containers import VerticalScroll
 from textual.message import Message
@@ -57,6 +60,44 @@ _STATUS_SORT_RANK = {
 }
 
 
+class DateDivider(Static):
+    """Date divider inserted between sessions on different days.
+
+    Visual: ╭─── ⬤ 今天 (2026-04-03) ───╮
+    """
+
+    def __init__(self, date_label: str, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._date_label = date_label
+
+    def render(self) -> str:
+        label = self._date_label
+        return f"[#d97757]──── ⬤ {rich_escape(label)} ────[/]"
+
+
+def _format_date_divider(dt: datetime) -> str:
+    """Format a datetime for date divider display.
+
+    Returns: '今天 (04-03)', '昨天 (04-02)', '2026-04-01 周二'
+    """
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
+    today = now.date()
+    d = dt.date()
+    day_names = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+
+    if d == today:
+        return f"今天 ({d.strftime('%m-%d')})"
+    delta = (today - d).days
+    if delta == 1:
+        return f"昨天 ({d.strftime('%m-%d')})"
+    if delta < 7:
+        weekday = day_names[d.weekday()]
+        return f"{d.strftime('%m-%d')} {weekday}"
+    return f"{d.strftime('%Y-%m-%d')} {day_names[d.weekday()]}"
+
+
 class FilterBar(Static):
     """Horizontal filter bar with ALL + per-status chips."""
 
@@ -93,7 +134,7 @@ class FilterBar(Static):
 
         # ALL chip
         if self._active_filter is None:
-            parts.append(f"[bold #fb923c]\\[ ALL {total} \\][/]")
+            parts.append(f"[bold #d97757]\\[ ALL {total} \\][/]")
         else:
             parts.append(f"[#78716c]ALL {total}[/]")
 
@@ -103,7 +144,7 @@ class FilterBar(Static):
             label = _TAB_LABELS.get(status, "?")
             count = self._counts.get(status, 0)
             if status == self._active_filter:
-                parts.append(f"[bold #fb923c]\\[ {icon}{label} {count} \\][/]")
+                parts.append(f"[bold #d97757]\\[ {icon}{label} {count} \\][/]")
             else:
                 parts.append(f"[#78716c]{icon}{label} {count}[/]")
 
@@ -222,6 +263,9 @@ class SessionListPanel(VerticalScroll):
             self._view_mode = "list"
         self.post_message(self.ViewModeChanged(self._view_mode))
         self._rebuild()
+        # When switching views, keep viewport at the top to avoid landing
+        # on blank space if the previous view was scrolled deeper.
+        self.scroll_home(animate=False)
 
     def set_active_tab(self, status: Status) -> None:
         """Switch to a specific status filter (called by keyboard shortcuts)."""
@@ -331,7 +375,23 @@ class SessionListPanel(VerticalScroll):
         # Generate spine timeline data
         spine_data = self._build_spine_data(filtered)
 
+        # Track current date for date dividers
+        prev_date = None
+
         for i, session in enumerate(filtered):
+            # ── Insert DateDivider when crossing day boundary ──
+            if session.last_timestamp:
+                ts = session.last_timestamp
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                session_date = ts.date()
+            else:
+                session_date = None
+
+            if session_date and session_date != prev_date:
+                label = _format_date_divider(session.last_timestamp)
+                self.mount(DateDivider(label, classes="date-divider"))
+                prev_date = session_date
             meta = self._all_meta.get(session.session_id)
             thought = self._last_thoughts.get(session.session_id, "")
             lineage_type = self._lineage_types.get(session.session_id)
@@ -347,7 +407,7 @@ class SessionListPanel(VerticalScroll):
             self.mount(card)
 
     def _rebuild_swimlane(self) -> None:
-        """Render swimlane timeline (swimlane view)."""
+        """Render swimlane timeline (swimlane view) with interactive widget."""
         if not self._workflow_cluster:
             self.mount(
                 Static(
@@ -359,21 +419,14 @@ class SessionListPanel(VerticalScroll):
 
         session_statuses = {s.session_id: s.status for s in self._sessions}
 
-        # Pre-render content with estimated width (avoid size=0 on mount)
-        content_width = max(40, (self.size.width or 60) - 4)
         widget = Swimlane()
         self.mount(widget)
-
-        # Defer set_data until after mount so widget has valid dimensions
-        def _deferred_set_data():
-            widget.set_data(
-                self._workflow_cluster,
-                statuses=session_statuses,
-                current_session_id=self._selected_id,
-                compact=True,
-            )
-
-        self.call_after_refresh(_deferred_set_data)
+        widget.set_data(
+            self._workflow_cluster,
+            statuses=session_statuses,
+            current_session_id=self._selected_id,
+            compact=True,
+        )
 
     def toggle_noise(self) -> None:
         """Toggle visibility of NOISE sessions."""

@@ -13,7 +13,8 @@ Design:
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+import os
+from datetime import datetime, timezone
 from typing import Optional
 
 from rich.markup import escape as rich_escape
@@ -24,11 +25,11 @@ from ccsm.models.session import Status, Workflow, WorkflowCluster
 
 # Status tags for swimlane labels
 _STATUS_TAGS = {
-    Status.ACTIVE: ("●", "#22c55e"),
-    Status.BACKGROUND: ("◐", "#3b82f6"),
-    Status.IDEA: ("◇", "#a855f7"),
-    Status.DONE: ("○", "#78716c"),
-    Status.NOISE: ("·", "#44403c"),
+    Status.ACTIVE: "A",
+    Status.BACKGROUND: "B",
+    Status.IDEA: "I",
+    Status.DONE: "D",
+    Status.NOISE: "N",
 }
 
 
@@ -69,20 +70,57 @@ class Swimlane(Static):
         self._current_session_id = current_session_id
         self._compact_mode = compact
         self._needs_render = True
-        # Try immediate render; if width is 0, on_mount/on_resize will handle it
-        self._try_render()
+        # Render only when mounted; otherwise on_mount will pick it up.
+        if self.is_mounted:
+            self.call_after_refresh(self._try_render)
 
     def _try_render(self) -> None:
         """Render content if we have valid dimensions and data."""
         if not self._needs_render or not self._cluster:
             return
+        # Wait until layout establishes a non-zero width.
+        if self.size.width <= 0:
+            return
         content = self._render_content()
-        self.update(content)
+        self._apply_content(content)
         self._needs_render = False
+
+    def _apply_content(self, content: str) -> None:
+        """Update renderable and force a concrete height for live TTY layout.
+
+        In the real terminal, `Static.update()` can keep the widget at its
+        initial 1-line auto height when content is filled after mount. That
+        leaves swimlane mode looking blank even though the renderable exists.
+        """
+        line_count = max(1, content.count("\n") + 1)
+        # Vertical padding is 1 top + 1 bottom in both widget CSS blocks.
+        self.styles.height = line_count + 2
+        self.update(content)
+        self.refresh(layout=True)
+        self._debug_dump(content)
+
+    def _debug_dump(self, content: str) -> None:
+        """Optionally dump rendered swimlane content for terminal debugging."""
+        path = os.getenv("CCSM_DEBUG_RENDER_FILE")
+        if not path:
+            return
+        try:
+            now = datetime.now(timezone.utc).isoformat()
+            preview = content[:2000]
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(
+                    f"\n=== {now} ===\n"
+                    f"mounted={self.is_mounted} size={self.size} "
+                    f"content_lines={content.count(chr(10)) + 1}\n"
+                    f"{preview}\n"
+                )
+        except Exception:
+            # Debug logging must never affect UI behavior.
+            pass
 
     def on_mount(self) -> None:
         """Ensure content is rendered after mount."""
-        if self._needs_render:
+        if self._cluster:
             self.call_after_refresh(self._try_render)
 
     def _deferred_render(self) -> None:
@@ -91,113 +129,17 @@ class Swimlane(Static):
         self._try_render()
 
     def _render_content(self) -> str:
-        if not self._cluster or not self._cluster.workflows:
-            return "[#78716c]No workflows to display[/]"
-
-        workflows = self._cluster.workflows
-        lines: list[str] = []
-
-        # ── Compute time range ───────────────────────────────────
-        all_times: list[datetime] = []
-        for wf in workflows:
-            if wf.first_timestamp:
-                all_times.append(wf.first_timestamp)
-            if wf.last_timestamp:
-                all_times.append(wf.last_timestamp)
-
-        if not all_times:
-            return "[#78716c]No timestamp data[/]"
-
-        min_t = min(all_times)
-        max_t = max(all_times)
-        span = (max_t - min_t).total_seconds()
-        if span < 1:
-            span = 3600  # Minimum 1 hour span
-
-        # ── Adaptive width based on mode ────────────────────────
-        available_width = self.size.width or 60
-        if self._compact_mode:
-            LANE_WIDTH = max(20, available_width - 4)  # Narrow: use most of available width
-        else:
-            LANE_WIDTH = max(40, min(80, available_width - 20))
-
-        # ── Time axis header ─────────────────────────────────────
-        header = _build_time_header(min_t, max_t, LANE_WIDTH)
-        lines.append(f" {header}")
-        lines.append("")
-
-        # ── Render each workflow lane ────────────────────────────
-        self._lane_y_map = []
-        current_line = len(lines)  # Track y position
-
-        for wf in workflows:
-            lane_start_y = current_line
-            lane_line = _build_lane(
-                wf, min_t, span, LANE_WIDTH,
-                self._statuses, self._current_session_id,
-            )
-
-            # Determine dominant status for this workflow
-            wf_status = self._get_workflow_status(wf)
-            tag_icon, tag_color = _STATUS_TAGS.get(wf_status, ("○", "#78716c"))
-
-            # Prefer AI name over auto-generated name
-            name = rich_escape(wf.display_name)
-            if wf_status == Status.ACTIVE:
-                name_fmt = f"[bold #22c55e]{name}[/]"
-            else:
-                name_fmt = f"[#a8a29e]{name}[/]"
-
-            # Session count
-            count_info = f"[#78716c]{wf.session_count}s[/]"
-
-            if self._compact_mode:
-                # Compact: lane on one line, name + tag below
-                lines.append(f" {lane_line}")
-                current_line += 1
-                lines.append(f"   [{tag_color}]{tag_icon}[/] {name_fmt}  {count_info}")
-                current_line += 1
-            else:
-                # Full: lane + name + tag on same line
-                lines.append(
-                    f" {lane_line}  [{tag_color}]{tag_icon}[/] {name_fmt}  {count_info}"
-                )
-                current_line += 1
-
-            # Fork branches (compact mode: skip, full mode: show first 2)
-            if not self._compact_mode:
-                for branch in wf.fork_branches[:2]:
-                    fork_label = rich_escape(branch[0][:8]) if branch else "?"
-                    lines.append(
-                        f" {'':>{LANE_WIDTH}}  [#60a5fa]└─◆ {fork_label}[/]"
-                    )
-                    current_line += 1
-
-            # Record y range for this workflow
-            self._lane_y_map.append((lane_start_y, current_line, wf))
-
-            lines.append("")
-            current_line += 1
-
-        # ── Orphans ──────────────────────────────────────────────
-        if self._cluster.orphans:
-            lines.append(
-                f" [#78716c]+ {len(self._cluster.orphans)} standalone sessions[/]"
-            )
-
-        # ── Legend ───────────────────────────────────────────────
-        lines.append("")
-        if self._compact_mode:
-            lines.append(
-                " [#78716c]● start  ◇ compact  [bold #fb923c]● current[/][/]"
-            )
-        else:
-            lines.append(
-                " [#78716c]● start  ◇ compact  ◆ fork  ━ chain  "
-                "[bold #fb923c]● current[/][/]"
-            )
-
-        return "\n".join(lines)
+        if not self._cluster:
+            return "No workflows to display"
+        content, lane_map = render_swimlane_text(
+            self._cluster,
+            statuses=self._statuses,
+            current_session_id=self._current_session_id,
+            compact=self._compact_mode,
+            available_width=self.size.width or 60,
+        )
+        self._lane_y_map = lane_map
+        return content
 
     def _get_workflow_status(self, wf: Workflow) -> Status:
         """Determine the dominant status of a workflow."""
@@ -225,41 +167,117 @@ class Swimlane(Static):
     def on_resize(self, event) -> None:
         """Re-render on resize to adapt lane widths."""
         if self._cluster:
-            self.update(self._render_content())
+            self._needs_render = True
+            self._try_render()
 
 
 def _build_time_header(
     min_t: datetime, max_t: datetime, width: int,
 ) -> str:
-    """Build a time axis header with day markers."""
+    """Build a clean non-overlapping time header."""
+    width = max(12, width)
+    start = min_t.strftime("%m-%d %H:%M")
+    end = max_t.strftime("%m-%d %H:%M")
+    label = f"{start} -> {end}"
+    if len(label) > width:
+        label = f"{min_t.strftime('%m-%d')} -> {max_t.strftime('%m-%d')}"
+    if len(label) > width:
+        label = label[: width - 1] + "…"
+    line1 = label.ljust(width)
+    line2 = "|" + "-" * (width - 2) + "|" if width >= 3 else "-" * width
+    return f"{line1}\n {line2}"
+
+
+def render_swimlane_text(
+    cluster: WorkflowCluster,
+    statuses: Optional[dict[str, Status]] = None,
+    current_session_id: Optional[str] = None,
+    compact: bool = True,
+    available_width: int = 60,
+) -> tuple[str, list[tuple[int, int, Workflow]]]:
+    """Render swimlane into plain text plus lane map.
+
+    This helper is reused by both the Swimlane widget and a Static fallback path.
+    """
+    statuses = statuses or {}
+    workflows = cluster.workflows
+    if not workflows:
+        return "No workflows to display", []
+
+    all_times: list[datetime] = []
+    for wf in workflows:
+        if wf.first_timestamp:
+            all_times.append(wf.first_timestamp)
+        if wf.last_timestamp:
+            all_times.append(wf.last_timestamp)
+    if not all_times:
+        return "No timestamp data", []
+
+    min_t = min(all_times)
+    max_t = max(all_times)
     span = (max_t - min_t).total_seconds()
     if span < 1:
         span = 3600
 
-    dates: list[datetime] = []
-    current = min_t.replace(hour=0, minute=0, second=0, microsecond=0)
-    while current <= max_t + timedelta(days=1):
-        dates.append(current)
-        current += timedelta(days=1)
+    if compact:
+        lane_width = max(20, available_width - 4)
+    else:
+        lane_width = max(40, min(80, available_width - 20))
 
-    axis = [" "] * width
-    for d in dates:
-        pos = int(((d - min_t).total_seconds() / span) * (width - 1))
-        pos = max(0, min(pos, width - 1))
-        label = d.strftime("%b %d")
-        for i, ch in enumerate(label):
-            if pos + i < width:
-                axis[pos + i] = ch
+    lines: list[str] = []
+    lane_map: list[tuple[int, int, Workflow]] = []
+    lines.append(f" {_build_time_header(min_t, max_t, lane_width)}")
+    lines.append("")
+    current_line = len(lines)
 
-    header = "".join(axis)
-    sep = [" "] * width
-    for d in dates:
-        pos = int(((d - min_t).total_seconds() / span) * (width - 1))
-        pos = max(0, min(pos, width - 1))
-        if pos < width:
-            sep[pos] = "│"
+    for wf in workflows:
+        lane_start_y = current_line
+        lane_line = _build_lane(wf, min_t, span, lane_width, statuses, current_session_id)
 
-    return f"[#78716c]{header}[/]\n [#78716c]{''.join(sep)}[/]"
+        # Determine dominant status for label icon
+        all_sids = list(wf.sessions)
+        for branch in wf.fork_branches:
+            all_sids.extend(branch)
+        wf_status = Status.DONE
+        for status in [Status.ACTIVE, Status.BACKGROUND, Status.IDEA, Status.DONE]:
+            if any(statuses.get(sid) == status for sid in all_sids):
+                wf_status = status
+                break
+        tag_icon = _STATUS_TAGS.get(wf_status, "D")
+
+        name_raw = (wf.display_name or "").replace("\n", " ").strip()
+        max_name_len = max(14, lane_width - 18) if compact else 64
+        if len(name_raw) > max_name_len:
+            name_raw = name_raw[: max_name_len - 1] + "…"
+        name_raw = rich_escape(name_raw)
+        count_info = f"{wf.session_count}s"
+
+        if compact:
+            lines.append(f" {lane_line}")
+            current_line += 1
+            lines.append(f"   {tag_icon} {name_raw}  {count_info}")
+            current_line += 1
+        else:
+            lines.append(f" {lane_line}  {tag_icon} {name_raw}  {count_info}")
+            current_line += 1
+            for branch in wf.fork_branches[:2]:
+                fork_label = rich_escape(branch[0][:8]) if branch else "?"
+                lines.append(f" {'':>{lane_width}}  ->x {fork_label}")
+                current_line += 1
+
+        lane_map.append((lane_start_y, current_line, wf))
+        lines.append("")
+        current_line += 1
+
+    if cluster.orphans:
+        lines.append(f" + {len(cluster.orphans)} standalone sessions")
+    lines.append("")
+    if compact:
+        lines.append(" o start  + compact  * current")
+    else:
+        lines.append(" o start  + compact  x fork  - chain  * current")
+
+    return "\n".join(lines), lane_map
 
 
 def _build_lane(
@@ -292,11 +310,11 @@ def _build_lane(
         positions.append(pos)
 
         if sid == current_id:
-            lane[pos] = "★"
+            lane[pos] = "*"
         elif i == 0:
-            lane[pos] = "●"
+            lane[pos] = "o"
         else:
-            lane[pos] = "◇"
+            lane[pos] = "+"
 
     # Fill chain connections
     for j in range(len(positions) - 1):
@@ -304,20 +322,6 @@ def _build_lane(
         end = positions[j + 1]
         for k in range(start, end):
             if k < width and lane[k] == " ":
-                lane[k] = "━"
+                lane[k] = "-"
 
-    # Convert to Rich markup
-    result_parts: list[str] = []
-    for ch in lane:
-        if ch == "★":
-            result_parts.append("[bold #fb923c]●[/]")
-        elif ch == "●":
-            result_parts.append("[#22c55e]●[/]")
-        elif ch == "◇":
-            result_parts.append("[#a78bfa]◇[/]")
-        elif ch == "━":
-            result_parts.append("[#78716c]━[/]")
-        else:
-            result_parts.append(ch)
-
-    return "".join(result_parts)
+    return "".join(lane)

@@ -70,24 +70,24 @@ def _format_tokens(tokens: int) -> str:
 
 # Status inline tags (same as session_card but for detail display)
 _STATUS_TAGS = {
-    Status.ACTIVE: ("[#22c55e]● Active[/]", "#22c55e"),
-    Status.BACKGROUND: ("[#3b82f6]◐ Back[/]", "#3b82f6"),
+    Status.ACTIVE: ("[#788c5d]● Active[/]", "#788c5d"),
+    Status.BACKGROUND: ("[#6a9bcc]◐ Back[/]", "#6a9bcc"),
     Status.IDEA: ("[#a855f7]◇ Idea[/]", "#a855f7"),
     Status.DONE: ("[#78716c]○ Done[/]", "#78716c"),
-    Status.NOISE: ("[#44403c]· Noise[/]", "#44403c"),
+    Status.NOISE: ("[#3a3835]· Noise[/]", "#3a3835"),
 }
 
 _PRIORITY_DISPLAY = {
-    Priority.FOCUS: ("[#fb923c]▲[/] FOCUS", "#fb923c"),
+    Priority.FOCUS: ("[#d97757]▲[/] FOCUS", "#d97757"),
     Priority.WATCH: ("[#facc15]△[/] WATCH", "#facc15"),
     Priority.PARK: ("[#78716c]▽[/] PARK", "#78716c"),
-    Priority.HIDE: ("[#44403c]▿[/] HIDE", "#44403c"),
+    Priority.HIDE: ("[#3a3835]▿[/] HIDE", "#3a3835"),
 }
 
 # Milestone status rendering
 _MS_ICONS = {
-    MilestoneStatus.DONE: ("[#22c55e]✓[/]", "#22c55e"),
-    MilestoneStatus.IN_PROGRESS: ("[#fb923c]▶[/]", "#fb923c"),
+    MilestoneStatus.DONE: ("[#788c5d]✓[/]", "#788c5d"),
+    MilestoneStatus.IN_PROGRESS: ("[#d97757]▶[/]", "#d97757"),
     MilestoneStatus.PENDING: ("[#78716c]○[/]", "#78716c"),
 }
 
@@ -213,7 +213,7 @@ class SessionDetail(VerticalScroll):
         # Status tag inline
         status_tag, _ = _STATUS_TAGS.get(s.status, (s.status.value, "#78716c"))
 
-        K = "#a8a29e"
+        K = "#b0aea5"
         dur = _format_duration(s.duration_seconds)
         msg_info = f"{dur} · {s.message_count} msg"
 
@@ -225,11 +225,11 @@ class SessionDetail(VerticalScroll):
         if s.total_input_tokens > 0 or s.total_output_tokens > 0:
             token_str = f" · {_format_tokens(s.total_input_tokens)}↑ {_format_tokens(s.total_output_tokens)}↓"
 
-        running = "  [bold #22c55e]⚡ Running[/]" if s.is_running else ""
+        running = "  [bold #788c5d]⚡ Running[/]" if s.is_running else ""
 
-        # Large title (Gemini det-summary style)
+        # Large title (brand orange)
         section.mount(Static(
-            f"  [#fb923c bold]{title}[/]  {status_tag}{running}",
+            f"  [#d97757 bold]{title}[/]  {status_tag}{running}",
             classes="detail-section-title",
         ))
 
@@ -256,11 +256,14 @@ class SessionDetail(VerticalScroll):
     # ── MILESTONES (1st priority) ─────────────────────────────
 
     def _mount_milestones_section(self) -> None:
-        """Mount milestone timeline — Stepper style with left guide line."""
+        """Mount milestone timeline — Stepper style with left guide line.
+
+        IN_PROGRESS milestones get background highlight for visual focus.
+        """
         section = Vertical(classes="detail-section")
         self.mount(section)
         section.mount(Static(
-            "[#a8a29e]─── 🧭 MILESTONES ───[/]",
+            "  [#a8a29e]🧭 MILESTONES[/]",
             classes="detail-section-title",
         ))
 
@@ -281,14 +284,15 @@ class SessionDetail(VerticalScroll):
 
         if not milestones:
             section.mount(Static(
-                "  [#78716c italic]No milestone data. Press [/][bold #fb923c]s[/][#78716c italic] to generate.[/]",
+                "  [#78716c italic]No milestone data. Press [/][bold #d97757]s[/][#78716c italic] to generate.[/]",
                 classes="detail-section-body",
             ))
             return
 
-        # Render milestones inside Stepper container (det-milestones style)
+        # Render milestones inside Stepper container
         stepper = Vertical(classes="det-milestones")
-        lines: list[str] = []
+        section.mount(stepper)
+
         for ms in milestones:
             icon, color = _MS_ICONS.get(ms.status, ("[#78716c]○[/]", "#78716c"))
 
@@ -300,14 +304,22 @@ class SessionDetail(VerticalScroll):
                 detail_text = ms.detail
                 if len(detail_text) > 60:
                     detail_text = detail_text[:59] + "…"
-                detail_str = f"  [#a8a29e]{rich_escape(detail_text)}[/]"
+                detail_str = f"\n      [#a8a29e]{rich_escape(detail_text)}[/]"
 
+            # IN_PROGRESS gets a dedicated highlighted container
             if ms.status == MilestoneStatus.IN_PROGRESS:
-                lines.append(f"  {icon} [{color} bold]{label_markup}[/]{detail_str}")
+                ms_widget = Static(
+                    f"  {icon} [{color} bold]{label_markup}[/]{detail_str}",
+                    classes="det-ms-active",
+                )
             else:
-                lines.append(f"  {icon} [{color}]{label_markup}[/]{detail_str}")
+                ms_widget = Static(
+                    f"  {icon} [{color}]{label_markup}[/]{detail_str}",
+                    classes="det-ms-item",
+                )
+            stepper.mount(ms_widget)
 
-            # Sub-items (show for in-progress, and up to 2 for others)
+            # Sub-items
             show_subs = ms.sub_items
             if ms.status != MilestoneStatus.IN_PROGRESS:
                 show_subs = ms.sub_items[:2]
@@ -318,13 +330,11 @@ class SessionDetail(VerticalScroll):
                 sub_label = rich_escape(item.label)
                 here_marker = ""
                 if item.status == MilestoneStatus.IN_PROGRESS:
-                    here_marker = "  [#fb923c bold]← HERE[/]"
-                lines.append(
-                    f"    {sub_icon} [{sub_color}]{sub_label}[/]{here_marker}"
-                )
-
-        section.mount(stepper)
-        stepper.mount(Static("\n".join(lines), classes="detail-section-body"))
+                    here_marker = "  [#d97757 bold]← HERE[/]"
+                stepper.mount(Static(
+                    f"    {sub_icon} [{sub_color}]{sub_label}[/]{here_marker}",
+                    classes="det-ms-sub",
+                ))
 
     # ── CONTEXT SUMMARY (2nd priority) ────────────────────────
 
@@ -333,13 +343,13 @@ class SessionDetail(VerticalScroll):
         section = Vertical(classes="detail-section")
         self.mount(section)
         section.mount(Static(
-            "[#a8a29e]─── 📝 CONTEXT SUMMARY ───[/]",
+            "  [#a8a29e]📝 CONTEXT SUMMARY[/]",
             classes="detail-section-title",
         ))
 
         lines: list[str] = []
-        V = "#e7e5e4"
-        K = "#a8a29e"
+        V = "#e8e6dc"
+        K = "#b0aea5"
 
         has_compact = self._compact_parsed and self._compact_parsed.primary_request
 
@@ -373,7 +383,7 @@ class SessionDetail(VerticalScroll):
                         break
 
                 if concept_items:
-                    tags = " · ".join(f"[#60a5fa]{rich_escape(c)}[/]" for c in concept_items)
+                    tags = " · ".join(f"[#6a9bcc]{rich_escape(c)}[/]" for c in concept_items)
                     lines.append(f"  [{K}]Concepts[/] {tags}")
 
         elif self._summary and self._summary.description:
@@ -387,7 +397,7 @@ class SessionDetail(VerticalScroll):
             if self._summary.key_insights:
                 lines.append("")
                 for insight in self._summary.key_insights[:3]:
-                    lines.append(f"    [#60a5fa]•[/] {rich_escape(insight)}")
+                    lines.append(f"    [#6a9bcc]•[/] {rich_escape(insight)}")
 
         else:
             # L3 fallback: use AI intent or first user content as minimal context
@@ -403,20 +413,20 @@ class SessionDetail(VerticalScroll):
                 source = "AI" if ai_intent else "首次请求"
                 lines.append(f"  [{K}]{source}[/] [{V}]{rich_escape(content)}[/]")
                 lines.append("")
-                lines.append(f"  [{K} italic]Press [/][bold #fb923c]s[/][{K} italic] for detailed AI summary.[/]")
+                lines.append(f"  [{K} italic]Press [/][bold #d97757]s[/][{K} italic] for detailed AI summary.[/]")
             else:
-                lines.append(f"  [{K} italic]No context summary. Press [/][bold #fb923c]s[/][{K} italic] to generate.[/]")
+                lines.append(f"  [{K} italic]No context summary. Press [/][bold #d97757]s[/][{K} italic] to generate.[/]")
 
         section.mount(Static("\n".join(lines), classes="detail-section-body"))
 
     # ── WHERE YOU LEFT OFF (Breakpoint badge style) ────────────
 
     def _mount_where_left_off_section(self) -> None:
-        """Mount the breakpoint / last-prompt section with badge."""
-        section = Vertical(classes="detail-section detail-breakpoint")
+        """Mount the breakpoint / last-prompt section with panel border."""
+        section = Vertical(classes="detail-section det-breakpoint-section")
         self.mount(section)
 
-        # Breakpoint badge (Gemini det-breakpoint-badge style)
+        # Breakpoint badge (panel border style with brand orange)
         section.mount(Static(
             " 📍 WHERE YOU LEFT OFF ",
             classes="det-breakpoint-badge",
@@ -434,16 +444,16 @@ class SessionDetail(VerticalScroll):
             prompt_text = last_prompt
             if len(prompt_text) > 200:
                 prompt_text = prompt_text[:197] + "…"
-            lines.append(f"  [#fb923c bold]You asked[/]")
+            lines.append(f"  [#d97757 bold]You asked[/]")
             lines.append(f"  {rich_escape(prompt_text)}")
         elif last_user:
             user_text = last_user
             if len(user_text) > 200:
                 user_text = user_text[:197] + "…"
-            lines.append(f"  [#fb923c bold]You said[/]")
+            lines.append(f"  [#d97757 bold]You said[/]")
             lines.append(f"  {rich_escape(user_text)}")
 
-        # Last AI response (show what AI was doing/said last)
+        # Last AI response
         last_ai = dd.last_assistant_msg if dd else None
         if not last_ai and self._last_replies:
             last_ai = self._last_replies[-1]
@@ -453,14 +463,14 @@ class SessionDetail(VerticalScroll):
             if len(ai_text) > 200:
                 ai_text = ai_text[:197] + "…"
             lines.append("")
-            lines.append(f"  [#60a5fa bold]AI responded[/]")
+            lines.append(f"  [#6a9bcc bold]AI responded[/]")
             lines.append(f"  [#a8a29e]{rich_escape(ai_text)}[/]")
 
-        # Breakpoint from summary (if available)
+        # Breakpoint from summary
         bp = self._summary.breakpoint if self._summary else None
         if bp and bp.last_topic:
             lines.append("")
-            lines.append(f"  [#22c55e bold]→ 下一步[/] {rich_escape(bp.last_topic)}")
+            lines.append(f"  [#788c5d bold]→ 下一步[/] {rich_escape(bp.last_topic)}")
 
         # Last insight from AI summary
         if self._summary and self._summary.key_insights:
@@ -468,7 +478,7 @@ class SessionDetail(VerticalScroll):
             if len(last_insight) > 100:
                 last_insight = last_insight[:97] + "…"
             lines.append("")
-            lines.append(f"  [#60a5fa]💡 Insight[/] {rich_escape(last_insight)}")
+            lines.append(f"  [#6a9bcc]💡 Insight[/] {rich_escape(last_insight)}")
 
         if not lines:
             lines.append("  [#78716c italic]No breakpoint data available[/]")
@@ -489,7 +499,7 @@ class SessionDetail(VerticalScroll):
             return  # Nothing to show
 
         lines: list[str] = []
-        V = "#e7e5e4"
+        V = "#e8e6dc"
 
         if dd.files_edited:
             # Show up to 5 files, then "+N more"
@@ -497,7 +507,7 @@ class SessionDetail(VerticalScroll):
             file_names = [_re.sub(r".*/", "", f) for f in shown]  # basename only
             extra = len(dd.files_edited) - len(shown)
             suffix = f" (+{extra})" if extra > 0 else ""
-            lines.append(f"  [#22c55e]📝 Edited[/]  [{V}]{', '.join(file_names)}{suffix}[/]")
+            lines.append(f"  [#788c5d]📝 Edited[/]  [{V}]{', '.join(file_names)}{suffix}[/]")
 
         if dd.commands_run:
             shown = dd.commands_run[-5:]  # Last 5 commands
@@ -510,7 +520,7 @@ class SessionDetail(VerticalScroll):
             file_names = [_re.sub(r".*/", "", f) for f in shown]
             extra = len(dd.files_read) - len(shown)
             suffix = f" (+{extra})" if extra > 0 else ""
-            lines.append(f"  [#60a5fa]📖 Read[/]    [{V}]{', '.join(file_names)}{suffix}[/]")
+            lines.append(f"  [#6a9bcc]📖 Read[/]    [{V}]{', '.join(file_names)}{suffix}[/]")
 
         if dd.agents_spawned:
             for desc in dd.agents_spawned[:3]:
@@ -539,8 +549,8 @@ class SessionDetail(VerticalScroll):
         collapsible = Collapsible(title="💬 LAST EXCHANGE", collapsed=True)
         self.mount(collapsible)
 
-        V = "#e7e5e4"
-        K = "#a8a29e"
+        V = "#e8e6dc"
+        K = "#b0aea5"
 
         # User message bubble
         if dd and dd.last_user_msg:
@@ -591,7 +601,7 @@ class SessionDetail(VerticalScroll):
         count = len(cluster.workflows) if cluster else 0
         title = f"🔗 WORKFLOWS ({count})"
         section.mount(Static(
-            f"[#a8a29e]─── {title} ───[/]",
+            f"  [#a8a29e]{title}[/]",
             classes="detail-section-title",
         ))
 
@@ -613,12 +623,12 @@ class SessionDetail(VerticalScroll):
             for sid in workflow.sessions
         )
         if has_active:
-            title_fmt = f"[bold #22c55e]{name}[/]"
+            title_fmt = f"[bold #788c5d]{name}[/]"
         else:
-            title_fmt = f"[#e7e5e4 bold]{name}[/]"
+            title_fmt = f"[#e8e6dc bold]{name}[/]"
 
-        K = "#a8a29e"
-        V = "#e7e5e4"
+        K = "#b0aea5"
+        V = "#e8e6dc"
 
         lines = [
             f"  [{K}]Workflow[/] {title_fmt}",
@@ -651,7 +661,7 @@ class SessionDetail(VerticalScroll):
                 status = statuses.get(sid, Status.DONE)
                 tag_markup, _ = _STATUS_TAGS.get(status, ("○ Done", "#78716c"))
                 session_lines.append(
-                    f"  [#60a5fa]  └─◆[/] [{V}]{sid[:12]}[/]  {tag_markup}"
+                    f"  [#6a9bcc]  └─◆[/] [{V}]{sid[:12]}[/]  {tag_markup}"
                 )
 
         if session_lines:

@@ -1,18 +1,19 @@
-/* ── Claude Native Theme ────────────────────────────────────────────────────
- * Primary:    #fb923c (orange-400)
- * Background: #1c1917 (stone-900)
- * Panel BG:   #292524 (stone-800)
- * Text:       #e7e5e4 (stone-200)
- * Secondary:  #a8a29e (stone-400)
+/* ── Claude Brand Theme ─────────────────────────────────────────────────────
+ * Primary:    #d97757 (Claude Orange — warm terracotta)
+ * Background: #141413 (deep warm black)
+ * Panel BG:   #1e1d1c (elevated surface)
+ * Text:       #e8e6dc (warm parchment white)
+ * Secondary:  #b0aea5 (muted stone)
  * Muted:      #78716c (stone-500)
- * Border:     #44403c (stone-700)
+ * Border:     #3a3835 (subtle separator)
+ * Status:     #788c5d (muted green), #6a9bcc (muted blue), #a78bfa (lavender)
  * ──────────────────────────────────────────────────────────────────────────── */
 
 /* ── Global ──────────────────────────────────────────────────────────────── */
 
 Screen {
-    background: #1c1917;
-    color: #e7e5e4;
+    background: #141413;
+    color: #e8e6dc;
 }
 
 /* ── Dual-Panel Layout (Worktree + Sessions) ───────────────────────────── */
@@ -28,8 +29,8 @@ Screen {
 #worktree-panel {
     width: 20%;
     min-width: 18;
-    background: #292524;
-    border-right: solid #44403c;
+    background: #1e1d1c;
+    border-right: solid #3a3835;
     padding: 0;
 }
 
@@ -37,38 +38,38 @@ Screen {
     dock: top;
     height: 3;
     content-align: center middle;
-    background: #1c1917;
+    background: #141413;
     color: #78716c;
     text-style: bold;
-    border-bottom: solid #44403c;
+    border-bottom: solid #3a3835;
     padding: 0 1;
 }
 
 #worktree-tree {
-    background: #292524;
+    background: #1e1d1c;
     padding: 0 1;
     scrollbar-size: 1 1;
 }
 
 #worktree-tree > .tree--label {
-    color: #e7e5e4;
+    color: #e8e6dc;
 }
 
 #worktree-tree > .tree--cursor {
-    background: #fb923c 20%;
-    color: #fb923c;
+    background: #d97757 20%;
+    color: #d97757;
     text-style: bold;
 }
 
 #worktree-tree > .tree--highlight {
-    background: #fb923c 10%;
+    background: #d97757 10%;
 }
 
 /* ── Right Panel: Session List (80% width) ────────────────────────────── */
 
 #session-panel {
     width: 80%;
-    background: #292524;
+    background: #1e1d1c;
     padding: 0;
 }
 
@@ -76,61 +77,139 @@ Screen {
     dock: top;
     height: 3;
     content-align: center middle;
-    background: #1c1917;
+    background: #141413;
     color: #78716c;
     text-style: bold;
-    border-bottom: solid #44403c;
+    border-bottom: solid #3a3835;
     padding: 0 1;
 }
 
 #session-list-container {
-    background: #292524;
+    background: #1e1d1c;
     padding: 0;
     scrollbar-size: 1 1;
 }
 
-/* ── Session Card ───────────────────────────────────────────────────────── */
+/* ── Session Card (compose-based flex layout) ─────────────────────────── */
 
 .session-card {
+    layout: horizontal;
     height: auto;
-    max-height: 5;
+    max-height: 4;
     padding: 0 1;
     margin: 0;
-    background: #292524;
-    border-bottom: solid #44403c;
+    background: #1e1d1c;
+    border-bottom: solid #3a3835;
 }
 
 .session-card:hover {
-    background: #44403c 40%;
+    background: #3a3835 40%;
 }
 
 .session-card.-selected {
-    background: #fb923c 15%;
-    border-left: tall #fb923c;
+    background: #d97757 12%;
+    border-left: tall #d97757;
 }
 
-.session-card .card-title {
-    color: #e7e5e4;
+/* Spine gutter: fixed-width time + graph connector */
+.card-spine {
+    width: 8;
+    min-width: 8;
+    height: auto;
+    padding: 0;
+    content-align: right top;
+    color: #78716c;
+}
+
+/* Card body: flex vertical, takes remaining width */
+.card-body {
+    width: 1fr;
+    height: auto;
+    padding: 0 0 0 1;
+}
+
+/* Title row: horizontal flex, title fills remaining space */
+.card-row-title {
+    layout: horizontal;
+    height: 1;
+    width: 100%;
+}
+
+.card-title {
+    width: 1fr;
+    height: 1;
+    color: #e8e6dc;
+    text-style: bold;
+    overflow: hidden;
+}
+
+.card-tag {
+    width: auto;
+    min-width: 8;
+    height: 1;
+    padding: 0 1;
     text-style: bold;
 }
 
-.session-card .card-meta {
-    color: #a8a29e;
+.tag-active { color: #788c5d; }
+.tag-background { color: #6a9bcc; }
+.tag-idea { color: #a78bfa; }
+.tag-done { color: #78716c; }
+.tag-noise { color: #3a3835; }
+
+.card-badge {
+    width: auto;
+    height: 1;
+    padding: 0 1;
+}
+
+.lineage-fork { color: #6a9bcc; }
+.lineage-compact { color: #a78bfa; }
+.lineage-dup { color: #e87b7b; }
+
+.card-time {
+    width: auto;
+    min-width: 10;
+    height: 1;
+    content-align: right middle;
+    color: #78716c;
+}
+
+/* Intent row: horizontal flex, intent fills remaining space */
+.card-row-intent {
+    layout: horizontal;
+    height: 1;
+    width: 100%;
+}
+
+.card-intent {
+    width: 1fr;
+    height: 1;
+    color: #b0aea5;
+    overflow: hidden;
+}
+
+.card-msgcount {
+    width: auto;
+    min-width: 6;
+    height: 1;
+    content-align: right middle;
+    color: #78716c;
 }
 
 /* ── Status badges ─────────────────────────────────────────────────────── */
 
 .badge-active {
-    color: #22c55e;
+    color: #788c5d;
     text-style: bold;
 }
 
 .badge-background {
-    color: #3b82f6;
+    color: #6a9bcc;
 }
 
 .badge-idea {
-    color: #a855f7;
+    color: #a78bfa;
 }
 
 .badge-done {
@@ -138,18 +217,18 @@ Screen {
 }
 
 .badge-noise {
-    color: #44403c;
+    color: #3a3835;
 }
 
 /* ── Priority badges ────────────────────────────────────────────────────── */
 
 .priority-focus {
-    color: #fb923c;
+    color: #d97757;
     text-style: bold;
 }
 
 .priority-watch {
-    color: #facc15;
+    color: #d4b86a;
 }
 
 .priority-park {
@@ -157,18 +236,28 @@ Screen {
 }
 
 .priority-hide {
-    color: #44403c;
+    color: #3a3835;
 }
 
 /* ── Status Group Headers ───────────────────────────────────────────────── */
 
+/* ── Date Divider ──────────────────────────────────────────────────────── */
+
+.date-divider {
+    height: 1;
+    padding: 0 1;
+    background: #141413;
+    color: #d97757;
+    text-style: bold;
+}
+
 .status-group-header {
     height: 1;
     padding: 0 1;
-    background: #1c1917;
-    color: #a8a29e;
+    background: #141413;
+    color: #b0aea5;
     text-style: bold;
-    border-bottom: solid #44403c;
+    border-bottom: solid #3a3835;
 }
 
 /* ── Drawer Overlay ────────────────────────────────────────────────────── */
@@ -180,8 +269,8 @@ SessionDetailDrawer {
 #drawer-panel {
     width: 66%;
     height: 100%;
-    background: #131211;
-    border-left: solid #fb923c;
+    background: #121110;
+    border-left: solid #d97757;
     padding: 0;
 }
 
@@ -189,30 +278,30 @@ SessionDetailDrawer {
     dock: top;
     height: 3;
     content-align: center middle;
-    background: #1c1917;
+    background: #141413;
     color: #78716c;
     text-style: bold;
-    border-bottom: solid #44403c;
+    border-bottom: solid #3a3835;
     padding: 0 1;
 }
 
 /* ── Detail Content (inside Drawer) ────────────────────────────────────── */
 
 #detail-content {
-    background: #131211;
+    background: #121110;
     padding: 1 2;
     scrollbar-size: 1 1;
     height: 1fr;
 }
 
 .detail-section {
-    margin-bottom: 1;
+    margin-bottom: 2;
     padding: 0;
     height: auto;
 }
 
 .detail-section-title {
-    color: #a8a29e;
+    color: #b0aea5;
     text-style: bold;
     margin-bottom: 0;
     padding: 0;
@@ -220,7 +309,7 @@ SessionDetailDrawer {
 }
 
 .detail-section-body {
-    color: #e7e5e4;
+    color: #e8e6dc;
     padding: 0 0 0 1;
     height: auto;
 }
@@ -234,8 +323,8 @@ SessionDetailDrawer {
 .detail-reply-content {
     padding: 1 2;
     margin: 0;
-    background: #1c1917;
-    color: #e7e5e4;
+    background: #141413;
+    color: #e8e6dc;
     height: auto;
     max-height: 30;
     overflow-y: auto;
@@ -244,7 +333,7 @@ SessionDetailDrawer {
 /* ── Markdown Rendering Quality ──────────────────────────────────────── */
 
 .detail-reply-content MarkdownFence {
-    background: #0d0b0a;
+    background: #0d0c0b;
     margin: 1 0;
     padding: 0;
 }
@@ -255,21 +344,21 @@ SessionDetailDrawer {
 }
 
 .detail-reply-content MarkdownH1 {
-    color: #fb923c;
+    color: #d97757;
     text-style: bold;
     background: transparent;
     margin: 1 0;
 }
 
 .detail-reply-content MarkdownH2 {
-    color: #e7e5e4;
+    color: #e8e6dc;
     text-style: bold;
     background: transparent;
     margin: 1 0;
 }
 
 .detail-reply-content MarkdownH3 {
-    color: #a8a29e;
+    color: #b0aea5;
     text-style: bold;
     background: transparent;
     margin: 1 0;
@@ -290,62 +379,83 @@ SessionDetailDrawer {
 }
 
 .detail-reply-content MarkdownBlockQuote {
-    background: #292524;
-    border-left: outer #fb923c 40%;
+    background: #1e1d1c;
+    border-left: outer #d97757 40%;
     margin: 1 0;
     padding: 0 1;
 }
 
 .detail-reply-content MarkdownBlock > .code_inline {
-    background: #fb923c 12%;
-    color: #fbbf24;
+    background: #d97757 12%;
+    color: #e8b96a;
 }
 
-/* ── Breakpoint Box (highlighted) ──────────────────────────────────── */
+/* ── Breakpoint Box (panel border, visually prominent) ────────────── */
 
-.detail-breakpoint {
-    margin-bottom: 1;
+.det-breakpoint-section {
+    margin: 1 1 2 1;
     padding: 0;
     height: auto;
+    border: panel #d97757 40%;
+    background: #d97757 6%;
 }
 
 .detail-breakpoint-body {
-    color: #e7e5e4;
-    padding: 1 3;
-    margin: 0 1;
-    background: #fb923c 10%;
-    border: solid #fb923c 40%;
+    color: #e8e6dc;
+    padding: 1 2;
+    margin: 0;
     height: auto;
 }
 
 /* ── Breakpoint Badge ─────────────────────────────────────────────────── */
 
 .det-breakpoint-badge {
-    background: #fb923c;
-    color: #1c1917;
+    background: #d97757;
+    color: #141413;
     text-style: bold;
     padding: 0 1;
     height: auto;
     width: auto;
-    margin: 0 0 0 1;
+    margin: 0;
 }
 
 /* ── Milestone Stepper ────────────────────────────────────────────────── */
 
 .det-milestones {
-    border-left: solid #44403c;
+    border-left: solid #3a3835;
     padding: 0 0 0 1;
     margin: 0 0 0 2;
     height: auto;
 }
 
+.det-ms-item {
+    height: auto;
+    padding: 0;
+    margin: 0;
+}
+
+.det-ms-active {
+    height: auto;
+    padding: 0 1;
+    margin: 0;
+    background: #d97757 10%;
+    border-left: solid #d97757;
+}
+
+.det-ms-sub {
+    height: auto;
+    padding: 0;
+    margin: 0;
+    color: #b0aea5;
+}
+
 /* ── Summary Intent (block-quote style) ───────────────────────────────── */
 
 .det-summary-intent {
-    border-left: solid #fb923c 40%;
+    border-left: solid #d97757 40%;
     padding: 0 1;
     margin: 0 2;
-    color: #a8a29e;
+    color: #b0aea5;
     text-style: italic;
     height: auto;
 }
@@ -361,22 +471,22 @@ SessionDetailDrawer {
     width: 5;
     min-width: 5;
     height: 1;
-    background: #a855f7 30%;
-    color: #e7e5e4;
+    background: #a78bfa 30%;
+    color: #e8e6dc;
     text-style: bold;
     content-align: center middle;
     padding: 0;
 }
 
 .det-chat-avatar-user {
-    background: #22c55e 30%;
+    background: #788c5d 30%;
 }
 
 .det-chat-msg {
-    border: solid #44403c;
+    border: solid #3a3835;
     padding: 1 2;
     margin: 0 0 0 1;
-    background: #1c1917;
+    background: #141413;
     height: auto;
     max-height: 20;
     overflow-y: auto;
@@ -385,7 +495,7 @@ SessionDetailDrawer {
 /* ── Focus Indicators ───────────────────────────────────────────────────── */
 
 #worktree-panel:focus-within {
-    border-right: solid #e7e5e4;
+    border-right: solid #e8e6dc;
 }
 
 /* ── Footer ──────────────────────────────────────────────────────────────── */
@@ -393,13 +503,13 @@ SessionDetailDrawer {
 #footer-bar {
     dock: bottom;
     height: 1;
-    background: #1c1917;
+    background: #141413;
     color: #78716c;
     padding: 0 1;
 }
 
 .footer-key {
-    color: #fb923c;
+    color: #d97757;
     text-style: bold;
 }
 
@@ -412,8 +522,8 @@ SessionDetailDrawer {
 #header-bar {
     dock: top;
     height: 1;
-    background: #1c1917;
-    color: #fb923c;
+    background: #141413;
+    color: #d97757;
     text-style: bold;
     padding: 0 1;
 }
@@ -443,10 +553,10 @@ SessionDetailDrawer {
 .status-tab-bar {
     height: 2;
     padding: 0 1;
-    background: #1c1917;
-    color: #a8a29e;
+    background: #141413;
+    color: #b0aea5;
     text-style: bold;
-    border-bottom: solid #44403c;
+    border-bottom: solid #3a3835;
     dock: top;
 }
 
@@ -473,7 +583,7 @@ SessionDetailDrawer {
 /* ── Collapsible Sections (WHAT WAS DONE, LAST EXCHANGE) ───────────────── */
 
 #detail-content Collapsible {
-    background: #131211;
+    background: #121110;
     border: none;
     padding: 0;
     margin-bottom: 1;
@@ -481,16 +591,16 @@ SessionDetailDrawer {
 }
 
 #detail-content Collapsible > CollapsibleTitle {
-    color: #a8a29e;
-    background: #1c1917;
+    color: #b0aea5;
+    background: #141413;
     padding: 0 1;
     text-style: bold;
     height: auto;
 }
 
 #detail-content Collapsible > CollapsibleTitle:hover {
-    background: #44403c 40%;
-    color: #e7e5e4;
+    background: #3a3835 40%;
+    color: #e8e6dc;
 }
 
 #detail-content Collapsible > Contents {
@@ -504,9 +614,9 @@ SessionDetailDrawer {
     height: 3;
     margin: 0;
     padding: 0 1;
-    background: #1c1917;
-    color: #e7e5e4;
-    border: solid #fb923c 40%;
+    background: #141413;
+    color: #e8e6dc;
+    border: solid #d97757 40%;
 }
 
 .search-input.-hidden {
@@ -514,5 +624,5 @@ SessionDetailDrawer {
 }
 
 .search-input:focus {
-    border: solid #fb923c;
+    border: solid #d97757;
 }
