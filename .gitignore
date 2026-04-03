@@ -7,3 +7,6 @@ dist/
 build/
 *.egg
 .eggs/
+
+# Claude Code worktrees
+.worktrees/

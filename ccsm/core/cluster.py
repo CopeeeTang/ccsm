@@ -23,7 +23,7 @@ DEFAULT_MODEL = "claude-haiku-4.5"
 
 _SYSTEM_PROMPT = """\
 You are a project analyst. Given a list of workflows (session chains) and orphan sessions, do two things:
-1. Give each workflow a short semantic name (≤8 Chinese chars or ≤20 English chars)
+1. Give each workflow a short semantic name (≤8 Chinese characters)
 2. Assign orphan sessions to an existing workflow if they belong, or leave unassigned
 
 Output ONLY valid JSON:
@@ -37,9 +37,9 @@ Output ONLY valid JSON:
 }
 
 Rules:
+- 默认使用中文命名，专有名词（API、Redis、Claude Code 等）保留英文
 - Names should be action-oriented: "登录修复", "API重构", "数据迁移"
 - Only assign an orphan if it clearly belongs to a workflow's topic
-- Use the same language as the session content
 - Output ONLY JSON, no markdown, no explanation"""
 
 

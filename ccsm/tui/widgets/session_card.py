@@ -179,8 +179,8 @@ class SessionCard(Static):
                 f"{right_markup}"
             )
         else:
-            no_content_text = "  \U0001f4dd (no content)"
-            left_len2 = len("  📝 (no content)") + 1   # +1 for emoji extra terminal width
+            no_content = "  📝 (no content)"
+            left_len2 = len(no_content) + 1   # +1 for emoji extra terminal width
             padding2 = max(1, w - left_len2 - right_visible_len)
             line2 = (
                 f"  [#44403c]\U0001f4dd (no content)[/]"

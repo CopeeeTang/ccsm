@@ -54,6 +54,7 @@ class Swimlane(Static):
         self._statuses: dict[str, Status] = {}
         self._current_session_id: Optional[str] = None
         self._compact_mode: bool = False  # True when embedded in narrow panel
+        self._lane_y_map: list[tuple[int, int, Workflow]] = []  # (y_start, y_end, workflow)
 
     def set_data(
         self,
@@ -66,9 +67,9 @@ class Swimlane(Static):
         self._statuses = statuses or {}
         self._current_session_id = current_session_id
         self._compact_mode = compact
-        self.update(self._render())
+        self.update(self._render_content())
 
-    def _render(self) -> str:
+    def _render_content(self) -> str:
         if not self._cluster or not self._cluster.workflows:
             return "[#78716c]No workflows to display[/]"
 
@@ -105,7 +106,11 @@ class Swimlane(Static):
         lines.append("")
 
         # ── Render each workflow lane ────────────────────────────
+        self._lane_y_map = []
+        current_line = len(lines)  # Track y position
+
         for wf in workflows:
+            lane_start_y = current_line
             lane_line = _build_lane(
                 wf, min_t, span, LANE_WIDTH,
                 self._statuses, self._current_session_id,
@@ -128,22 +133,30 @@ class Swimlane(Static):
             if self._compact_mode:
                 # Compact: lane on one line, name + tag below
                 lines.append(f" {lane_line}")
+                current_line += 1
                 lines.append(f"   [{tag_color}]{tag_icon}[/] {name_fmt}  {count_info}")
+                current_line += 1
             else:
                 # Full: lane + name + tag on same line
                 lines.append(
                     f" {lane_line}  [{tag_color}]{tag_icon}[/] {name_fmt}  {count_info}"
                 )
+                current_line += 1
 
             # Fork branches (compact mode: skip, full mode: show first 2)
             if not self._compact_mode:
                 for branch in wf.fork_branches[:2]:
-                    fork_label = branch[0][:8] if branch else "?"
+                    fork_label = rich_escape(branch[0][:8]) if branch else "?"
                     lines.append(
                         f" {'':>{LANE_WIDTH}}  [#60a5fa]└─◆ {fork_label}[/]"
                     )
+                    current_line += 1
+
+            # Record y range for this workflow
+            self._lane_y_map.append((lane_start_y, current_line, wf))
 
             lines.append("")
+            current_line += 1
 
         # ── Orphans ──────────────────────────────────────────────
         if self._cluster.orphans:
@@ -167,7 +180,6 @@ class Swimlane(Static):
 
     def _get_workflow_status(self, wf: Workflow) -> Status:
         """Determine the dominant status of a workflow."""
-        # Check all sessions in the workflow (chain + forks)
         all_sids = list(wf.sessions)
         for branch in wf.fork_branches:
             all_sids.extend(branch)
@@ -177,6 +189,22 @@ class Swimlane(Static):
             if any(self._statuses.get(sid) == status for sid in all_sids):
                 return status
         return Status.DONE
+
+    def on_click(self, event) -> None:
+        """Map click y-coordinate to workflow lane and emit WorkflowSelected."""
+        if not self._lane_y_map:
+            return
+        # Account for padding (1 line top padding from CSS)
+        y = event.y
+        for y_start, y_end, wf in self._lane_y_map:
+            if y_start <= y < y_end:
+                self.post_message(self.WorkflowSelected(wf))
+                return
+
+    def on_resize(self, event) -> None:
+        """Re-render on resize to adapt lane widths."""
+        if self._cluster:
+            self.update(self._render_content())
 
 
 def _build_time_header(

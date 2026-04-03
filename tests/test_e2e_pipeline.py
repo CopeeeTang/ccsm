@@ -206,5 +206,5 @@ def test_swimlane_widget_renders():
     # Test widget creation
     widget = Swimlane()
     widget.set_data(cluster, current_session_id="compact-1")
-    rendered = widget._render()
+    rendered = widget._render_content()
     assert "main-work" in rendered or "wf-root-1" in rendered
