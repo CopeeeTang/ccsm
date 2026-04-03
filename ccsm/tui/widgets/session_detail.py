@@ -1,12 +1,13 @@
 """Right panel: Session detail widget — recovery-first design.
 
-Layout priority (top to bottom):
-1. 📋 SESSION — compact metadata (auxiliary top bar)
-2. 🧭 MILESTONES — phase progress from compact summary or rule-based (1st priority)
-3. 📝 CONTEXT SUMMARY — compact summary's Primary Request + Key Concepts (2nd priority)
-4. 📍 WHERE YOU LEFT OFF — last prompt / last user message / last insight (3rd priority)
-5. 🔧 WHAT WAS DONE — tool_use operations: edited/ran/read (collapsible)
-6. 💬 LAST EXCHANGE — last user+assistant pair (collapsible)
+Layout priority (top to bottom, progressive disclosure):
+1. 📋 SESSION — compact metadata card (always expanded)
+2. 🧠 AI DIGEST — five-dimension structured summary (always expanded)
+3. 🧭 MILESTONES — decision points / phase progress (always expanded)
+4. 📝 CONTEXT SUMMARY — compact summary details (collapsible, collapsed)
+5. 📍 WHERE YOU LEFT OFF — breakpoint detail (collapsible, collapsed)
+6. 🔧 WHAT WAS DONE — tool_use operations (collapsible, collapsed)
+7. 💬 LAST EXCHANGE — last user+assistant pair (collapsible, collapsed)
 
 Data source philosophy: mine JSONL first (zero cost), AI second (on demand).
 """
@@ -29,6 +30,7 @@ from ccsm.models.session import (
     MilestoneStatus,
     Priority,
     SessionDetailData,
+    SessionDigest,
     SessionInfo,
     SessionMeta,
     SessionSummary,
@@ -173,36 +175,43 @@ class SessionDetail(VerticalScroll):
         self._mount_single_workflow_detail(workflow, session_statuses)
 
     def _rebuild(self) -> None:
-        """Rebuild detail panel with recovery-first layout."""
+        """Rebuild detail panel with progressive disclosure layout.
+
+        Always expanded: SESSION card + AI DIGEST + MILESTONES
+        Collapsed by default: CONTEXT, WHERE LEFT OFF, WHAT WAS DONE, LAST EXCHANGE
+        """
         self.remove_children()
         s = self._session
         if s is None:
             self.mount(Static("Select a session to view details", classes="empty-state"))
             return
 
-        # ── Section 1: Session Identity (det-summary style) ───────
-        self._mount_session_section(s)
+        # ── 1. Session Identity (card style, always expanded) ──────
+        self._mount_session_card(s)
 
-        # ── Section 2: Milestones (Stepper with guide line) ───────
+        # ── 2. AI Digest (five-dimension, always expanded) ─────────
+        self._mount_digest_section()
+
+        # ── 3. Milestones (decision points, always expanded) ───────
         self._mount_milestones_section()
 
-        # ── Section 3: Context Summary (2nd priority) ──────────────
+        # ── 4. Context Summary (collapsible, collapsed) ────────────
         self._mount_context_summary_section()
 
-        # ── Section 4: Where You Left Off (Breakpoint badge) ──────
+        # ── 5. Where You Left Off (collapsible, collapsed) ─────────
         self._mount_where_left_off_section()
 
-        # ── Section 5: What Was Done (collapsible) ─────────────────
+        # ── 6. What Was Done (collapsible, collapsed) ──────────────
         self._mount_what_was_done_section()
 
-        # ── Section 6: Last Exchange (Chat bubble) ─────────────────
+        # ── 7. Last Exchange (collapsible, collapsed) ──────────────
         self._mount_last_exchange_section()
 
-    # ── SESSION IDENTITY (det-summary: large title + block-quote intent) ──
+    # ── SESSION IDENTITY (card style with panel border) ──────────
 
-    def _mount_session_section(self, s: SessionInfo) -> None:
-        """Mount session identity with large title and block-quote intent."""
-        section = Vertical(classes="detail-section")
+    def _mount_session_card(self, s: SessionInfo) -> None:
+        """Mount session identity as a bordered card."""
+        section = Vertical(classes="detail-section det-session-card")
         self.mount(section)
 
         title = s.display_title
@@ -252,6 +261,52 @@ class SessionDetail(VerticalScroll):
                 f"  💡 [{K} italic]\"{rich_escape(content)}\"[/]",
                 classes="det-summary-intent",
             ))
+
+    # ── AI DIGEST (five-dimension structured summary) ──────────
+
+    def _mount_digest_section(self) -> None:
+        """Mount AI Digest — five-dimension recovery summary, always expanded."""
+        digest = self._summary.digest if self._summary else None
+
+        section = Vertical(classes="detail-section det-digest-section")
+        self.mount(section)
+        section.mount(Static(
+            "  [#a8a29e]🧠 AI DIGEST[/]",
+            classes="detail-section-title",
+        ))
+
+        if not digest:
+            section.mount(Static(
+                "  [#78716c italic]Press [/][bold #d97757]s[/]"
+                "[#78716c italic] to generate AI digest.[/]",
+                classes="detail-section-body",
+            ))
+            return
+
+        V = "#e8e6dc"
+        K = "#b0aea5"
+        lines: list[str] = []
+
+        # Goal
+        lines.append(f"  [#d97757 bold]🎯 Goal[/]      [{V}]{rich_escape(digest.goal)}[/]")
+
+        # Progress
+        lines.append(f"  [#788c5d bold]📊 Progress[/]  [{V}]{rich_escape(digest.progress)}[/]")
+
+        # Breakpoint
+        lines.append(f"  [#6a9bcc bold]📍 Stopped[/]   [{V}]{rich_escape(digest.breakpoint)}[/]")
+
+        # Next Steps
+        if digest.next_steps:
+            lines.append(f"  [#a78bfa bold]→ Next[/]")
+            for step in digest.next_steps:
+                lines.append(f"    [#a78bfa]•[/] [{V}]{rich_escape(step)}[/]")
+
+        # Blocker
+        if digest.blocker:
+            lines.append(f"  [#e87b7b bold]⚠ Blocker[/]   [{V}]{rich_escape(digest.blocker)}[/]")
+
+        section.mount(Static("\n".join(lines), classes="detail-section-body"))
 
     # ── MILESTONES (1st priority) ─────────────────────────────
 
@@ -339,13 +394,9 @@ class SessionDetail(VerticalScroll):
     # ── CONTEXT SUMMARY (2nd priority) ────────────────────────
 
     def _mount_context_summary_section(self) -> None:
-        """Mount context summary from compact summary or AI."""
-        section = Vertical(classes="detail-section")
-        self.mount(section)
-        section.mount(Static(
-            "  [#a8a29e]📝 CONTEXT SUMMARY[/]",
-            classes="detail-section-title",
-        ))
+        """Mount context summary — collapsible, collapsed by default."""
+        collapsible = Collapsible(title="📝 CONTEXT SUMMARY", collapsed=True)
+        self.mount(collapsible)
 
         lines: list[str] = []
         V = "#e8e6dc"
@@ -359,8 +410,8 @@ class SessionDetail(VerticalScroll):
             # Primary Request (truncated)
             if cp.primary_request:
                 req = cp.primary_request.replace("\n", " ").strip()
-                if len(req) > 300:
-                    req = req[:297] + "…"
+                if len(req) > 120:
+                    req = req[:117] + "…"
                 lines.append(f"  [{V}]{rich_escape(req)}[/]")
                 lines.append("")
 
@@ -417,20 +468,14 @@ class SessionDetail(VerticalScroll):
             else:
                 lines.append(f"  [{K} italic]No context summary. Press [/][bold #d97757]s[/][{K} italic] to generate.[/]")
 
-        section.mount(Static("\n".join(lines), classes="detail-section-body"))
+        collapsible.mount(Static("\n".join(lines), classes="detail-section-body"))
 
-    # ── WHERE YOU LEFT OFF (Breakpoint badge style) ────────────
+    # ── WHERE YOU LEFT OFF (collapsible, collapsed by default) ──
 
     def _mount_where_left_off_section(self) -> None:
-        """Mount the breakpoint / last-prompt section with panel border."""
-        section = Vertical(classes="detail-section det-breakpoint-section")
-        self.mount(section)
-
-        # Breakpoint badge (panel border style with brand orange)
-        section.mount(Static(
-            " 📍 WHERE YOU LEFT OFF ",
-            classes="det-breakpoint-badge",
-        ))
+        """Mount the breakpoint / last-prompt section — collapsible."""
+        collapsible = Collapsible(title="📍 WHERE YOU LEFT OFF", collapsed=True)
+        self.mount(collapsible)
 
         s = self._session
         dd = self._detail_data
@@ -441,17 +486,17 @@ class SessionDetail(VerticalScroll):
         last_user = s.last_user_message if s else None
 
         if last_prompt:
-            prompt_text = last_prompt
-            if len(prompt_text) > 200:
-                prompt_text = prompt_text[:197] + "…"
-            lines.append(f"  [#d97757 bold]You asked[/]")
-            lines.append(f"  {rich_escape(prompt_text)}")
+            prompt_text = last_prompt.replace("\n", " ")
+            if len(prompt_text) > 120:
+                prompt_text = prompt_text[:117] + "…"
+
+            lines.append(f"  [#d97757]🗣[/]  {rich_escape(prompt_text)}")
         elif last_user:
-            user_text = last_user
-            if len(user_text) > 200:
-                user_text = user_text[:197] + "…"
-            lines.append(f"  [#d97757 bold]You said[/]")
-            lines.append(f"  {rich_escape(user_text)}")
+            user_text = last_user.replace("\n", " ")
+            if len(user_text) > 120:
+                user_text = user_text[:117] + "…"
+
+            lines.append(f"  [#d97757]🗣[/]  {rich_escape(user_text)}")
 
         # Last AI response
         last_ai = dd.last_assistant_msg if dd else None
@@ -460,11 +505,9 @@ class SessionDetail(VerticalScroll):
 
         if last_ai:
             ai_text = last_ai.replace("\n", " ").strip()
-            if len(ai_text) > 200:
-                ai_text = ai_text[:197] + "…"
-            lines.append("")
-            lines.append(f"  [#6a9bcc bold]AI responded[/]")
-            lines.append(f"  [#a8a29e]{rich_escape(ai_text)}[/]")
+            if len(ai_text) > 150:
+                ai_text = ai_text[:147] + "…"
+            lines.append(f"  [#6a9bcc]🤖[/]  [#a8a29e]{rich_escape(ai_text)}[/]")
 
         # Breakpoint from summary
         bp = self._summary.breakpoint if self._summary else None
@@ -483,7 +526,7 @@ class SessionDetail(VerticalScroll):
         if not lines:
             lines.append("  [#78716c italic]No breakpoint data available[/]")
 
-        section.mount(Static("\n".join(lines), classes="detail-breakpoint-body"))
+        collapsible.mount(Static("\n".join(lines), classes="detail-section-body"))
 
     # ── WHAT WAS DONE (collapsible) ───────────────────────────
 

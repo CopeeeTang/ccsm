@@ -29,6 +29,8 @@ from ccsm.models.session import (
     MilestoneItem,
     MilestoneStatus,
     Priority,
+    SessionDigest,
+    SessionFact,
     SessionLineage,
     SessionMeta,
     SessionSummary,
@@ -264,6 +266,18 @@ def _summary_to_dict(summary: SessionSummary) -> dict:
         "breakpoint": breakpoint_data,
         "generated_at": _dt_to_iso(summary.generated_at),
         "model": summary.model,
+        # Phase 2: AI Digest + Facts
+        "digest": {
+            "goal": summary.digest.goal,
+            "progress": summary.digest.progress,
+            "breakpoint": summary.digest.breakpoint,
+            "next_steps": summary.digest.next_steps,
+            "blocker": summary.digest.blocker,
+        } if summary.digest else None,
+        "facts": [
+            {"content": f.content, "type": f.fact_type, "source": f.source}
+            for f in (summary.facts or [])
+        ],
     }
 
 
@@ -298,6 +312,29 @@ def _dict_to_summary(d: dict) -> SessionSummary:
             last_topic=bp_data.get("last_topic"),
         )
 
+    # Parse digest (Phase 2: backward-compatible — old files lack this key)
+    digest = None
+    digest_data = d.get("digest")
+    if digest_data and isinstance(digest_data, dict):
+        digest = SessionDigest(
+            goal=digest_data.get("goal", ""),
+            progress=digest_data.get("progress", ""),
+            breakpoint=digest_data.get("breakpoint", ""),
+            next_steps=digest_data.get("next_steps", []),
+            blocker=digest_data.get("blocker"),
+        )
+
+    # Parse facts (Phase 2: backward-compatible — old files lack this key)
+    facts = [
+        SessionFact(
+            content=fd["content"],
+            fact_type=fd.get("type"),
+            source=fd.get("source"),
+        )
+        for fd in d.get("facts", [])
+        if isinstance(fd, dict) and "content" in fd
+    ]
+
     return SessionSummary(
         session_id=d["session_id"],
         mode=d.get("mode", "extract"),
@@ -312,6 +349,8 @@ def _dict_to_summary(d: dict) -> SessionSummary:
         breakpoint=breakpoint,
         generated_at=_iso_to_dt(d.get("generated_at")),
         model=d.get("model"),
+        digest=digest,
+        facts=facts,
     )
 
 

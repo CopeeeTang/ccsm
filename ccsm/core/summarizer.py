@@ -34,6 +34,8 @@ from ccsm.models.session import (
     Milestone,
     MilestoneItem,
     MilestoneStatus,
+    SessionDigest,
+    SessionFact,
     SessionSummary,
 )
 
@@ -654,3 +656,472 @@ def refine_compact_summary_sync(
         return asyncio.run(
             refine_compact_summary(compact_text, base_url, api_key, model)
         )
+
+
+# ─── AI Digest: Five-Dimension Structured Summary ──────────────────────────
+
+
+_DIGEST_SYSTEM_PROMPT = """\
+你是一个会话恢复分析师。给定用户与 Claude Code 的完整对话，生成五维结构化摘要，\
+帮助用户打开这个会话时瞬间恢复上下文。
+
+五个维度：
+- goal: 一句话概括用户的原始目标
+- progress: 2-3句话描述完成了什么（提及具体文件、工具操作、关键决策）
+- breakpoint: 一句话说明工作停在了哪里
+- next_steps: 1-3条具体行动项（"在 file.py 中实现 X"，而非"继续工作"）
+- blocker: 如果有阻塞，说明需要什么才能继续；否则 null
+
+规则：
+- 默认使用中文，专有名词（API、Redis、Kubernetes）保留英文
+- progress 要具体，不要泛泛而谈
+- next_steps 必须是可执行的，不是"继续开发"这种
+- 输出 ONLY valid JSON，无 markdown 围栏，无解释"""
+
+_DIGEST_USER_TEMPLATE = """\
+分析这段对话并生成五维恢复摘要。会话有 {msg_count} 条消息，历时 {duration}。
+
+{compact_section}
+
+{milestones_section}
+
+以下是对话消息（用户 [U]，助手 [A]，工具操作 [T]）：
+
+{conversation}
+
+输出 ONLY valid JSON:
+{{"goal": "...", "progress": "...", "breakpoint": "...", "next_steps": ["..."], "blocker": ... }}"""
+
+
+def _format_messages_for_digest(
+    messages: list[JSONLMessage],
+    max_chars: int = 20000,
+) -> str:
+    """Format conversation for digest generation.
+
+    Wider budget than _format_messages_for_prompt (milestone extraction):
+    - User messages: keep first 500 chars (need decision context)
+    - Assistant messages: keep first 200 chars (need outcomes/conclusions)
+    - Tool operations: annotate with [Edited: file], [Ran: cmd]
+    - Total budget: 20KB (vs 12KB for milestones)
+    """
+    lines: list[str] = []
+    total_chars = 0
+
+    for i, msg in enumerate(messages):
+        prefix = "[U]" if msg.role == "user" else "[A]"
+        text = msg.content.strip()
+
+        if not text:
+            continue
+
+        if msg.role == "user":
+            if len(text) > 500:
+                text = text[:497] + "…"
+        else:
+            # Assistant: keep first meaningful line, up to 200 chars
+            first_line = ""
+            for line in text.split("\n"):
+                line = line.strip()
+                if line and len(line) > 5 and not line.startswith(("```", "─", "═", "###")):
+                    first_line = line
+                    break
+            text = first_line[:200] if first_line else "(tool usage / code output)"
+
+        line = f"{prefix} {text}"
+        if total_chars + len(line) > max_chars:
+            lines.append(f"... ({len(messages) - i} more messages)")
+            break
+
+        lines.append(line)
+        total_chars += len(line) + 1
+
+    return "\n".join(lines)
+
+
+def _build_digest_prompt(
+    messages: list[JSONLMessage],
+    compact_summary_text: Optional[str] = None,
+    milestones: Optional[list[Milestone]] = None,
+) -> str:
+    """Build the user prompt for digest generation."""
+    conversation = _format_messages_for_digest(messages)
+    duration = _format_duration(messages)
+
+    # Compact summary section (high-quality, pre-existing)
+    if compact_summary_text:
+        safe_text = compact_summary_text[:6000]  # Limit compact injection
+        # Escape braces to prevent .format() KeyError on user content
+        safe_text = safe_text.replace("{", "{{").replace("}", "}}")
+        compact_section = f"Claude Code 已有的上下文摘要（compact summary）：\n{safe_text}"
+    else:
+        compact_section = ""
+
+    # Milestones section (structural context)
+    if milestones:
+        ms_lines = []
+        for ms in milestones:
+            status_icon = {"done": "✓", "wip": "▶", "pending": "○"}.get(
+                ms.status.value, "·"
+            )
+            # Escape braces in user-generated labels/details
+            label = ms.label.replace("{", "{{").replace("}", "}}")
+            detail = (ms.detail or "").replace("{", "{{").replace("}", "}}")
+            ms_lines.append(f"  {status_icon} {label}: {detail}")
+        milestones_section = "已提取的里程碑：\n" + "\n".join(ms_lines)
+    else:
+        milestones_section = ""
+
+    return _DIGEST_USER_TEMPLATE.format(
+        msg_count=len(messages),
+        duration=duration,
+        compact_section=compact_section,
+        milestones_section=milestones_section,
+        conversation=conversation,
+    )
+
+
+async def generate_digest(
+    session_id: str,
+    jsonl_path: Path,
+    compact_summary_text: Optional[str] = None,
+    milestones: Optional[list[Milestone]] = None,
+    force: bool = False,
+    base_url: str = DEFAULT_BASE_URL,
+    api_key: str = DEFAULT_API_KEY,
+    model: str = DEFAULT_MODEL,
+) -> Optional[SessionDigest]:
+    """Generate a five-dimension AI digest for a session.
+
+    Input priority:
+      1. Full user messages + partial assistant (via _format_messages_for_digest)
+      2. Compact summary text (if available, high-quality pre-existing signal)
+      3. Milestones (if available, structural context)
+
+    Returns SessionDigest on success, None on failure.
+    Result is cached in the existing SessionSummary sidecar file.
+    """
+    # Cache check
+    if not force:
+        cached = load_summary(session_id)
+        if cached and cached.digest:
+            return cached.digest
+
+    # Parse messages
+    messages = parse_session_messages(jsonl_path)
+    if not messages:
+        return None
+
+    # Build prompt
+    user_prompt = _build_digest_prompt(messages, compact_summary_text, milestones)
+
+    try:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"{base_url}/v1/chat/completions",
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": _DIGEST_SYSTEM_PROMPT},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    "max_tokens": 1024,
+                    "temperature": 0.2,
+                },
+            )
+            resp.raise_for_status()
+            raw_text = resp.json()["choices"][0]["message"]["content"].strip()
+
+            # Strip markdown fences
+            if raw_text.startswith("```"):
+                raw_text = raw_text.split("\n", 1)[1] if "\n" in raw_text else raw_text[3:]
+            if raw_text.endswith("```"):
+                raw_text = raw_text[:-3].strip()
+
+            data = json.loads(raw_text)
+
+            digest = SessionDigest(
+                goal=data.get("goal", ""),
+                progress=data.get("progress", ""),
+                breakpoint=data.get("breakpoint", ""),
+                next_steps=data.get("next_steps", []),
+                blocker=data.get("blocker"),
+            )
+
+            # Persist to summary cache
+            summary = load_summary(session_id)
+            if summary:
+                summary.digest = digest
+                save_summary(summary)
+
+            return digest
+
+    except Exception as e:
+        logger.warning("Digest generation failed: %s", e)
+        return None
+
+
+def generate_digest_sync(
+    session_id: str,
+    jsonl_path: Path,
+    compact_summary_text: Optional[str] = None,
+    milestones: Optional[list[Milestone]] = None,
+    force: bool = False,
+    base_url: str = DEFAULT_BASE_URL,
+    api_key: str = DEFAULT_API_KEY,
+    model: str = DEFAULT_MODEL,
+) -> Optional[SessionDigest]:
+    """Synchronous wrapper for generate_digest."""
+    import asyncio
+    import concurrent.futures
+
+    try:
+        asyncio.get_running_loop()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(
+                asyncio.run,
+                generate_digest(
+                    session_id, jsonl_path, compact_summary_text,
+                    milestones, force, base_url, api_key, model,
+                ),
+            )
+            return future.result(timeout=35)
+    except RuntimeError:
+        return asyncio.run(
+            generate_digest(
+                session_id, jsonl_path, compact_summary_text,
+                milestones, force, base_url, api_key, model,
+            )
+        )
+
+
+# ─── Session Facts: Atomic Fact Extraction ──────────────────────────────────
+
+
+_FACTS_SYSTEM_PROMPT = """\
+你是一个知识提取专家。从以下会话摘要信息中提取原子化事实（atomic facts）。
+
+原子化事实的要求：
+- 每个 fact 是一个独立、自包含的陈述，不依赖上下文即可理解
+- 不使用代词（"它"、"这个"），用具体名称替代
+- 标注类型：decision（决策）/ discovery（发现）/ config（配置）/ constraint（约束）
+- 标注来源：从哪个阶段/里程碑提取的
+- 3-8 个 facts，质量优先，不要重复
+
+默认使用中文，专有名词保留英文。
+
+输出 ONLY valid JSON:
+{{"facts": [{{"content": "...", "type": "decision|discovery|config|constraint", "source": "..."}}]}}"""
+
+
+_FACTS_USER_TEMPLATE = """\
+从以下会话信息中提取原子化事实：
+
+{digest_section}
+
+{compact_section}
+
+{milestones_section}
+
+提取 3-8 个原子化事实。输出 ONLY JSON。"""
+
+
+async def extract_facts(
+    session_id: str,
+    compact_summary_text: Optional[str] = None,
+    milestones: Optional[list[Milestone]] = None,
+    digest: Optional[SessionDigest] = None,
+    force: bool = False,
+    base_url: str = DEFAULT_BASE_URL,
+    api_key: str = DEFAULT_API_KEY,
+    model: str = DEFAULT_MODEL,
+) -> list[SessionFact]:
+    """Extract atomic facts from pre-existing session artifacts.
+
+    Key design: uses ALREADY-GENERATED data (compact + milestones + digest)
+    as input, NOT raw messages. This keeps the LLM call very cheap (~2-3KB input).
+
+    Returns list of SessionFact on success, empty list on failure.
+    """
+    # Cache check
+    if not force:
+        cached = load_summary(session_id)
+        if cached and cached.facts:
+            return cached.facts
+
+    # Build input from pre-existing artifacts
+    sections = []
+
+    if digest:
+        digest_section = (
+            f"会话目标：{digest.goal}\n"
+            f"进度：{digest.progress}\n"
+            f"断点：{digest.breakpoint}\n"
+            f"下一步：{', '.join(digest.next_steps)}"
+        )
+        if digest.blocker:
+            digest_section += f"\n阻塞：{digest.blocker}"
+    else:
+        digest_section = ""
+
+    if compact_summary_text:
+        compact_section = f"Compact 摘要：\n{compact_summary_text[:4000]}"
+    else:
+        compact_section = ""
+
+    if milestones:
+        ms_lines = []
+        for ms in milestones:
+            status_icon = {"done": "✓", "wip": "▶", "pending": "○"}.get(
+                ms.status.value, "·"
+            )
+            detail = f": {ms.detail}" if ms.detail else ""
+            ms_lines.append(f"  {status_icon} {ms.label}{detail}")
+            for si in (ms.sub_items or []):
+                si_icon = {"done": "✓", "wip": "▶", "pending": "○"}.get(
+                    si.status.value, "·"
+                )
+                ms_lines.append(f"    {si_icon} {si.label}")
+        milestones_section = "里程碑：\n" + "\n".join(ms_lines)
+    else:
+        milestones_section = ""
+
+    # Need at least some input
+    if not digest_section and not compact_section and not milestones_section:
+        return []
+
+    # Escape braces to prevent .format() KeyError on user content
+    def _esc(s: str) -> str:
+        return s.replace("{", "{{").replace("}", "}}")
+
+    user_prompt = _FACTS_USER_TEMPLATE.format(
+        digest_section=_esc(digest_section),
+        compact_section=_esc(compact_section),
+        milestones_section=_esc(milestones_section),
+    )
+
+    try:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.post(
+                f"{base_url}/v1/chat/completions",
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": _FACTS_SYSTEM_PROMPT},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    "max_tokens": 1024,
+                    "temperature": 0.2,
+                },
+            )
+            resp.raise_for_status()
+            raw_text = resp.json()["choices"][0]["message"]["content"].strip()
+
+            # Strip markdown fences
+            if raw_text.startswith("```"):
+                raw_text = raw_text.split("\n", 1)[1] if "\n" in raw_text else raw_text[3:]
+            if raw_text.endswith("```"):
+                raw_text = raw_text[:-3].strip()
+
+            data = json.loads(raw_text)
+            facts_data = data.get("facts", [])
+
+            facts = [
+                SessionFact(
+                    content=fd.get("content", ""),
+                    fact_type=fd.get("type"),
+                    source=fd.get("source"),
+                )
+                for fd in facts_data
+                if isinstance(fd, dict) and fd.get("content")
+            ]
+
+            # Persist to summary cache
+            summary = load_summary(session_id)
+            if summary:
+                summary.facts = facts
+                save_summary(summary)
+
+            return facts
+
+    except Exception as e:
+        logger.warning("Facts extraction failed: %s", e)
+        return []
+
+
+def extract_facts_sync(
+    session_id: str,
+    compact_summary_text: Optional[str] = None,
+    milestones: Optional[list[Milestone]] = None,
+    digest: Optional[SessionDigest] = None,
+    force: bool = False,
+    base_url: str = DEFAULT_BASE_URL,
+    api_key: str = DEFAULT_API_KEY,
+    model: str = DEFAULT_MODEL,
+) -> list[SessionFact]:
+    """Synchronous wrapper for extract_facts."""
+    import asyncio
+    import concurrent.futures
+
+    try:
+        asyncio.get_running_loop()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(
+                asyncio.run,
+                extract_facts(
+                    session_id, compact_summary_text, milestones,
+                    digest, force, base_url, api_key, model,
+                ),
+            )
+            return future.result(timeout=25)
+    except RuntimeError:
+        return asyncio.run(
+            extract_facts(
+                session_id, compact_summary_text, milestones,
+                digest, force, base_url, api_key, model,
+            )
+        )
+
+
+# ─── Batch Preprocessing Interface ─────────────────────────────────────────
+
+
+def batch_preprocess(
+    session_ids: list[str],
+    jsonl_paths: dict[str, Path],
+    compact_summaries: Optional[dict[str, str]] = None,
+    mode: str = "llm",
+    generate_digests: bool = True,
+    extract_session_facts: bool = True,
+    on_progress: Optional[object] = None,
+    base_url: str = DEFAULT_BASE_URL,
+    api_key: str = DEFAULT_API_KEY,
+    model: str = DEFAULT_MODEL,
+) -> dict[str, SessionSummary]:
+    """Batch preprocess multiple sessions: summary + digest + facts.
+
+    Designed for CLI or external package usage. Processes sessions
+    sequentially with progress callback.
+
+    Args:
+        session_ids: List of session UUIDs to process
+        jsonl_paths: Mapping of session_id -> Path to JSONL file
+        compact_summaries: Optional mapping of session_id -> raw compact text
+        mode: "extract" or "llm"
+        generate_digests: Whether to also generate AI digests
+        extract_session_facts: Whether to also extract facts
+        on_progress: Callback(session_id: str, step: int, total: int)
+        base_url, api_key, model: LLM configuration
+
+    Returns:
+        Dict of session_id -> SessionSummary (with digest and facts populated)
+    """
+    raise NotImplementedError(
+        "Batch preprocessing — coming in next iteration. "
+        "Use summarize_session() + generate_digest_sync() + extract_facts_sync() "
+        "individually for now."
+    )

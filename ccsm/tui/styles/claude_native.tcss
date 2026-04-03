@@ -390,6 +390,26 @@ SessionDetailDrawer {
     color: #e8b96a;
 }
 
+/* ── Session Identity Card (panel border) ───────────────────────── */
+
+.det-session-card {
+    margin: 0 1 1 1;
+    padding: 1;
+    height: auto;
+    border: panel #3a3835;
+    background: #1e1d1c;
+}
+
+/* ── AI Digest Section (visually prominent, always expanded) ─────── */
+
+.det-digest-section {
+    margin: 0 1 2 1;
+    padding: 1;
+    height: auto;
+    border: panel #6a9bcc 40%;
+    background: #6a9bcc 4%;
+}
+
 /* ── Breakpoint Box (panel border, visually prominent) ────────────── */
 
 .det-breakpoint-section {
@@ -625,4 +645,129 @@ SessionDetailDrawer {
 
 .search-input:focus {
     border: solid #d97757;
+}
+
+/* ── Light Theme Overrides ── */
+.-light-theme Screen { background: #faf9f5; color: #141413; }
+.-light-theme #worktree-panel { background: #ffffff; border-right: solid #e6e4df; }
+.-light-theme #worktree-panel .panel-title { background: #faf9f5; color: #5e5c54; border-bottom: solid #e6e4df; }
+.-light-theme #worktree-tree { background: #ffffff; }
+.-light-theme #worktree-tree > .tree--label { color: #141413; }
+.-light-theme #worktree-panel:focus-within { border-right: solid #141413; }
+
+.-light-theme #session-panel { background: #ffffff; }
+.-light-theme #session-panel .panel-title { background: #faf9f5; color: #5e5c54; border-bottom: solid #e6e4df; }
+.-light-theme #session-list-container { background: #ffffff; }
+.-light-theme .search-input { background: #ffffff; color: #141413; border: solid #e6e4df; }
+.-light-theme .search-input:focus { border: solid #c97040; }
+
+.-light-theme .session-card { background: #ffffff; border-bottom: solid #e6e4df; }
+.-light-theme .session-card:hover { background: #f3f2eb; }
+.-light-theme .card-title { color: #141413; }
+
+.-light-theme .status-tab-bar { background: #faf9f5; border-bottom: solid #e6e4df; }
+
+.-light-theme .date-divider { background: #faf9f5; color: #c97040; }
+.-light-theme .status-group-header { background: #faf9f5; color: #5e5c54; border-bottom: solid #e6e4df; }
+
+.-light-theme .lineage-group { background: #ffffff; }
+.-light-theme .lineage-expand-bar { background: #faf9f5; color: #5e5c54; }
+.-light-theme .lineage-expand-bar:hover { color: #c97040; background: rgba(217,119,87, 0.08); }
+
+.-light-theme #drawer-panel { background: #fdfdfc; }
+.-light-theme .drawer-title { background: #faf9f5; color: #5e5c54; border-bottom: solid #e6e4df; }
+.-light-theme #detail-content { background: #fdfdfc; }
+
+.-light-theme .detail-section-body { color: #141413; }
+.-light-theme .detail-reply-content { background: #faf9f5; color: #141413; border: solid #e6e4df; }
+.-light-theme .detail-reply-content MarkdownFence { background: #ebe8e1; }
+.-light-theme .detail-reply-content MarkdownFence > Label { color: #5e5c54; }
+.-light-theme .detail-reply-content MarkdownBlockQuote { background: #f3f2eb; border-left: outer #c97040 40%; }
+.-light-theme .detail-reply-content MarkdownBlock > .code_inline { background: rgba(217,119,87, 0.12); color: #c97040; }
+
+.-light-theme .det-breakpoint-section { background: rgba(217,119,87, 0.08); }
+.-light-theme .det-breakpoint-badge { background: #c97040; color: #ffffff; }
+.-light-theme .detail-breakpoint-body { color: #141413; }
+.-light-theme .det-session-card { background: #ffffff; border: panel #e6e4df; }
+.-light-theme .det-digest-section { background: rgba(106,155,204, 0.06); border: panel #6a9bcc 40%; }
+
+.-light-theme #detail-content Collapsible { background: #faf9f5; }
+.-light-theme #detail-content Collapsible > CollapsibleTitle { background: #f3f2eb; color: #5e5c54; }
+.-light-theme #detail-content Collapsible > CollapsibleTitle:hover { background: #ebe8e1; color: #141413; }
+.-light-theme .det-chat-msg { background: #faf9f5; border: round #e6e4df; }
+.-light-theme .det-chat-avatar { color: #141413; }
+.-light-theme .det-chat-avatar-user { color: #141413; }
+
+.-light-theme #header-bar { background: #faf9f5; color: #c97040; }
+.-light-theme #footer-bar { background: #faf9f5; color: #5e5c54; }
+.-light-theme .footer-key { color: #c97040; }
+
+/* Light theme scrollbars */
+.-light-theme Scrollbar { background: #ffffff; }
+.-light-theme Scrollbar > .scrollbar--slider { background: #d5d3cc; }
+.-light-theme Scrollbar > .scrollbar--thumb { background: #d5d3cc; }
+.-light-theme Scrollbar > .scrollbar--slider:hover { background: #b0aea5; }
+.-light-theme Scrollbar > .scrollbar--thumb:hover { background: #b0aea5; }
+
+/* Light theme card spine + intents */
+.-light-theme .card-spine { color: #b0aea5; }
+.-light-theme .card-spine-graph { color: #c97040; }
+
+.-light-theme .card-intent { color: #5e5c54; }
+.-light-theme .card-time { color: #5e5c54; }
+.-light-theme .card-msgcount { color: #5e5c54; }
+
+
+/* ── Fork Universe Block (Isolated parallel space) ── */
+.fork-universe {
+    background: #18161a;
+    border: dashed rgba(168, 85, 247, 0.4);
+    margin: 1 2 2 4;
+    padding: 1 0;
+    height: auto;
+}
+
+.-light-theme .fork-universe {
+    background: #fbf0ff;
+    border: dashed #c084fc;
+}
+
+/* ── Stepped Compacts (Staircase margin for history) ── */
+.history-step-1 { 
+    margin-left: 2; 
+    margin-top: -1;
+    opacity: 0.85;
+}
+.history-step-2 { 
+    margin-left: 4; 
+    margin-top: -1;
+    opacity: 0.7;
+}
+.history-step-3 { 
+    margin-left: 6; 
+    margin-top: -1;
+    opacity: 0.55;
+}
+
+/* Hide intent for deep history for density */
+.history-step-2 .card-row-intent,
+.history-step-3 .card-row-intent {
+    display: none;
+}
+
+/* Fork point badge */
+.badge-fork-point {
+    background: #4c1d95;
+    color: #f5f3ff;
+    text-style: bold;
+    padding: 0 1;
+    margin-right: 1;
+}
+.-light-theme .badge-fork-point {
+    background: #c084fc;
+    color: #ffffff;
+}
+
+.card-spine-graph {
+    display: none;
 }

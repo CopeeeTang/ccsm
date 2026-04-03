@@ -3,12 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CCSM - 精英级交互演示</title>
+    <title>CCSM - 精英级交互演示 v3</title>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
         :root {
-            --bg-base: #131211; /* Ultra dark stone */
+            --bg-base: #131211; 
             --bg-panel: #1e1c1b; 
             --bg-hover: #292625; 
             --border: #332f2e;
@@ -19,7 +19,8 @@
             
             --accent: #fb923c; 
             --accent-dim: rgba(251, 146, 60, 0.15);
-            --fork-color: #a855f7;
+            --fork-color: #c084fc; 
+            --compact-color: #3b82f6; 
             
             --active: #22c55e;
             --font-ui: 'Inter', system-ui, sans-serif;
@@ -31,7 +32,7 @@
 
         /* HEADER */
         .header { padding: 16px 24px; background: rgba(30,28,27,0.8); backdrop-filter: blur(10px); border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; z-index: 100; }
-        .header h1 { font-size: 1.1rem; font-weight: 600; letter-spacing: 0.5px;}
+        .header-title-area h1 { font-size: 1.1rem; font-weight: 600; letter-spacing: 0.5px;}
 
         /* CONTAINER */
         .app-container { flex: 1; display: flex; position: relative; overflow: hidden; }
@@ -40,318 +41,232 @@
         .pane-header { padding: 16px 20px; font-weight: 600; font-size: 0.8rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; border-bottom: 1px solid var(--border); }
         .wt-item { padding: 10px 20px; color: var(--accent); font-weight: 600; background: var(--accent-dim); margin: 12px; border-radius: 6px;}
 
-        /* =========== THE SPINE LIST (TIME + LINEAGE) =========== */
+        /* =========== THE SPINE LIST =========== */
         .pane-list { width: 80%; background: var(--bg-base); overflow-y: auto; padding: 32px 0; }
-        
-        .timeline-container {
-            max-width: 800px;
-            margin: 0 auto;
-        }
+        .timeline-container { max-width: 800px; margin: 0 auto; position: relative;}
 
-        .wf-group-header {
-            font-size: 1.2rem; font-weight: 600; color: white; margin-left: 120px; margin-bottom: 24px;
-            display: flex; align-items: center; gap: 12px;
-        }
+        .wf-group-header { font-size: 1.2rem; font-weight: 600; color: white; margin-left: 120px; margin-bottom: 24px; display: flex; align-items: center; gap: 12px;}
         .wf-group-header span { font-size: 0.8rem; color: var(--text-muted); font-weight: normal; background: var(--bg-hover); padding: 2px 8px; border-radius: 12px; }
 
-        /* The row integrates Time, Spine Graphic, and Card */
-        .sw-row {
-            display: flex;
-            position: relative;
-            margin-bottom: 20px;
-        }
-
-        /* Time Column */
-        .sw-time {
-            width: 100px; flex-shrink: 0; text-align: right; padding-right: 16px;
-            color: var(--text-muted); font-size: 0.85rem; font-family: var(--font-mono);
-            padding-top: 14px;
-        }
-        .sw-row.fork .sw-time { color: var(--text-dim); }
-
-        /* Spine Graphic Column */
-        .sw-spine {
-            width: 40px; flex-shrink: 0; position: relative;
-        }
-        /* Main vertical compact line */
-        .sw-row.compact::after {
-            content:''; position: absolute; left: 119px; top: 32px; bottom: -20px;
-            width: 2px; background: var(--accent); opacity: 0.3;
-        }
-        .sw-row.compact:last-child::after { display: none; }
+        /* Unified SW-ROW baseline */
+        .sw-row { display: flex; position: relative; margin-bottom: 16px; transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1); }
+        .sw-time { width: 100px; flex-shrink: 0; text-align: right; padding-right: 16px; color: var(--text-muted); font-size: 0.85rem; font-family: var(--font-mono); padding-top: 14px;}
+        .sw-spine { width: 40px; flex-shrink: 0; position: relative;}
+        .sw-content { flex: 1; padding-left: 16px; padding-right: 40px;}
         
-        /* Nodes */
-        .node-dot {
-            width: 14px; height: 14px; border-radius: 50%;
-            background: var(--bg-base); border: 2px solid var(--text-dim);
-            position: absolute; left: 13px; top: 16px; z-index: 2;
-        }
-        .sw-row.active .node-dot { border-color: var(--accent); background: var(--accent); box-shadow: 0 0 0 4px rgba(251,146,60,0.2); }
-        .sw-row.compact .node-dot { border-color: var(--accent); }
-        .sw-row.fork .node-dot { border-color: var(--fork-color); width: 10px; height: 10px; left: 35px; top: 18px; }
-
-        /* Svg curve for forks */
-        .fork-curve {
-            position: absolute; left: 13px; top: -20px; width: 30px; height: 40px;
-            border-left: 2px solid var(--accent); opacity: 0.3;
-            border-bottom: 2px solid var(--fork-color);
-            border-bottom-left-radius: 12px;
-            z-index: 1; pointer-events: none;
-        }
-
-        /* Card Column */
-        .sw-content {
-            flex: 1; padding-left: 16px; padding-right: 40px;
-        }
-        .sw-row.fork .sw-content { padding-left: 36px; }
-
-        .session-card {
-            background: var(--bg-panel); border: 1px solid var(--border);
-            border-radius: 10px; padding: 16px; cursor: pointer; transition: all 0.2s;
-        }
+        .session-card { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; cursor: pointer; transition: all 0.3s; position: relative;}
         .session-card:hover { border-color: var(--text-muted); }
-        .sw-row.active .session-card { border-color: var(--accent); background: rgba(251,146,60,0.02); }
         
         .sc-title { font-weight: 600; font-size: 0.95rem; margin-bottom: 6px; display: flex; align-items: center; gap: 8px;}
-        .sw-row.fork .sc-title { color: var(--text-muted); }
-        
-        .sc-summary { font-size: 0.85rem; color: var(--text-dim); line-height: 1.5; }
-        
+        .sc-summary { font-size: 0.85rem; color: var(--text-dim); line-height: 1.5;}
         .badge { padding: 2px 6px; border-radius: 4px; font-size: 0.65rem; font-family:var(--font-mono); font-weight: 600;}
-        .badge.compact { color: var(--accent); background: rgba(251,146,60,0.1); }
-        .badge.fork { color: var(--fork-color); background: rgba(168,85,247,0.1); }
-
-
-        /* =========== DRAWER (DETAIL) =========== */
-        .drawer-overlay {
-            position: absolute; inset: 0; background: rgba(0,0,0,0.6);
-            backdrop-filter: blur(3px); opacity: 0; pointer-events: none; transition: opacity 0.3s; z-index: 50;
-        }
-        .drawer-panel {
-            position: absolute; top: 0; right: -70%; bottom: 0; width: 66%;
-            background: var(--bg-base); border-left: 1px solid var(--border);
-            box-shadow: -20px 0 50px rgba(0,0,0,0.8);
-            transition: right 0.4s cubic-bezier(0.16, 1, 0.3, 1); z-index: 60;
-            display: flex; flex-direction: column;
-        }
-        .app-container.drawer-open .drawer-overlay { opacity: 1; pointer-events: auto; }
-        .app-container.drawer-open .drawer-panel { right: 0; }
-        .drawer-close { position: absolute; top: 20px; right: 24px; background: none; border: none; font-size: 1.8rem; color: var(--text-muted); cursor: pointer; transition: color 0.2s;}
-        .drawer-close:hover { color: white; }
-
-        .drawer-content { overflow-y: auto; padding: 40px; display: flex; flex-direction: column; gap: 32px; }
-
-        /* 1. Summary Block */
-        .det-summary { padding-bottom: 24px; border-bottom: 1px solid var(--border); }
-        .det-title { font-size: 1.4rem; font-weight: 600; color: white; margin-bottom: 16px; padding-right: 40px; line-height: 1.4;}
-        .det-meta-row { display: flex; gap: 16px; font-size: 0.8rem; color: var(--text-muted); margin-bottom: 20px; font-family: var(--font-mono);}
-        .det-intent {
-            background: var(--bg-panel); border-left: 3px solid var(--text-dim); padding: 12px 16px;
-            font-size: 0.9rem; color: var(--text-muted); font-style: italic; border-radius: 0 6px 6px 0;
-            display: flex; gap: 12px; align-items:flex-start;
-        }
-
-        /* 2. Breakpoint Block (Crown Jewel) */
-        .det-breakpoint {
-            background: linear-gradient(145deg, var(--bg-panel), rgba(251,146,60,0.05));
-            border: 1px solid rgba(251,146,60,0.4);
-            border-radius: 12px; padding: 24px; position: relative;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
-        }
-        .det-breakpoint::before {
-            content: '📍 当前断点 MUST DO'; position: absolute; top: -11px; left: 24px;
-            background: var(--accent); color: #000; font-size: 0.75rem; font-weight: 700;
-            padding: 2px 10px; border-radius: 12px; letter-spacing: 0.5px;
-        }
-        .det-breakpoint h3 { font-size: 1.1rem; color: white; margin-bottom: 8px; font-weight: 500;}
-        .det-breakpoint p { font-size: 0.9rem; color: var(--text-muted); line-height: 1.6;}
-
-        /* 3. Milestones Stepper */
-        .det-milestones { }
-        .det-block-title { font-size: 0.8rem; font-weight: 700; color: var(--text-dim); letter-spacing: 1px; margin-bottom: 16px; text-transform: uppercase;}
         
-        .ms-list { border-left: 2px solid var(--border); margin-left: 8px; padding-left: 20px; }
-        .ms-item { position: relative; margin-bottom: 20px; }
-        .ms-item-dot { position: absolute; left: -27px; top: 4px; width: 12px; height: 12px; border-radius: 50%; background: var(--border); display:flex; align-items:center; justify-content:center; color: var(--bg-panel); font-size: 8px;}
-        .ms-item.done .ms-item-dot { background: var(--text-dim); content: '✓';}
-        .ms-item.done { color: var(--text-muted); font-size: 0.9rem; text-decoration: line-through; opacity: 0.7;}
-        
-        .ms-item.active .ms-item-dot { background: var(--accent); box-shadow: 0 0 0 4px rgba(251,146,60,0.2); }
-        .ms-item.active { color: white; font-weight: 500; font-size: 0.95rem; }
-        
-        .ms-item.pending .ms-item-dot { background: var(--bg-base); border: 2px solid var(--border); left:-29px;}
-        .ms-item.pending { color: var(--text-dim); font-size: 0.9rem;}
+        .node-dot { width: 14px; height: 14px; border-radius: 50%; background: var(--bg-base); border: 2px solid var(--text-dim); position: absolute; left: 13px; top: 16px; z-index: 2;}
 
-        /* 4. Last Reply Chat Bubble */
-        .det-last-reply { margin-top: 10px; }
-        .chat-bubble {
-            display: flex; gap: 16px; margin-top: 16px;
-        }
-        .chat-avatar {
-            width: 32px; height: 32px; border-radius: 8px; background: linear-gradient(135deg, #d8b4fe, #a855f7);
-            display: flex; align-items: center; justify-content: center; font-weight: bold; color:white; flex-shrink: 0; font-size: 0.8rem;
-        }
-        .chat-msg {
-            background: var(--bg-panel); border: 1px solid var(--border); border-radius: 2px 12px 12px 12px;
-            padding: 16px; font-size: 0.9rem; color: var(--text-main); line-height: 1.6;
-        }
-        .chat-msg code { background: rgba(0,0,0,0.5); padding: 2px 6px; border-radius: 4px; font-family: var(--font-mono); color: var(--accent); font-size: 0.85rem;}
+        /* =========================================
+           ULTIMATE DEMO: 阶梯主线 + 独立平行轨道带锚点
+           ========================================= */
+        
+        /* --- COMPACT (主干的阶梯式) --- */
+        .sw-row.compact.active .session-card { border-color: var(--accent); }
+        .sw-row.compact.active .node-dot { border-color: var(--accent); background: var(--accent); box-shadow: 0 0 0 4px rgba(251,146,60,0.2);}
+        
+        .sw-row.compact.history-1 { margin-left: 40px; margin-top: -8px;} /* 阶梯一 */
+        .sw-row.compact.history-1 .session-card { opacity: 0.8; font-size: 0.95em;}
+        
+        .sw-row.compact.history-2 { margin-left: 80px; margin-top: -8px;} /* 阶梯二 */
+        .sw-row.compact.history-2 .session-card { opacity: 0.6; font-size: 0.9em;}
+        .sw-row.compact.history-2 .sc-summary { display: none; } /* 压缩历史内容 */
+        
+        .badge.compact { color: var(--compact-color); background: rgba(59,130,246,0.1); }
 
+        /* --- 主干阶梯线 (仅仅提示归属) --- */
+        .sw-row.compact.active .sw-spine::after {
+            content: ''; position: absolute; top: 32px; left: 19px; width: 40px; height: 30px;
+            border-left: 2px solid rgba(251,146,60,0.3); border-bottom: 2px solid rgba(251,146,60,0.3); border-bottom-left-radius: 8px;
+        }
+        .sw-row.compact.history-1 .sw-spine::after {
+            content: ''; position: absolute; top: 32px; left: 19px; width: 40px; height: 30px;
+            border-left: 2px solid var(--border); border-bottom: 2px solid var(--border); border-bottom-left-radius: 8px;
+        }
+
+        /* --- FORK PARALLEL BLOCK (平行的实验空间盒子) --- */
+        /* 我们给 Fork 宇宙一个完整的大容器！ */
+        .fork-universe {
+            margin-left: 156px; /* 彻底平移出主干（绕过 100px 时间列 + 40px spine） */
+            margin-right: 40px;
+            margin-bottom: 32px;
+            background: #19161d; /* 非常幽暗的紫色背景 */
+            border: 1px solid rgba(168,85,247,0.2); 
+            border-radius: 12px;
+            position: relative;
+            padding: 16px;
+        }
+        
+        /* 锚点标签：明确告诉用户这个盒子源自哪里 */
+        .fork-anchor {
+            position: absolute;
+            top: -12px; left: 16px;
+            background: var(--bg-panel);
+            border: 1px solid rgba(168,85,247,0.4);
+            color: var(--fork-color);
+            padding: 2px 10px;
+            border-radius: 6px;
+            font-size: 0.75rem;
+            font-family: var(--font-mono);
+            display: flex; align-items: center; gap: 6px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.4);
+            z-index: 10;
+        }
+
+        /* Fork 宇宙内部的行卡片（内含更多 Session 和自身的 Compact 历史！） */
+        .fork-universe .sw-row { margin-left: 0; margin-bottom: 12px;}
+        .fork-universe .sw-row:last-child { margin-bottom: 0; }
+        
+        /* 重置内部时间轴宽度，使其在盒子里显得紧凑 */
+        .fork-universe .sw-time { width: 60px; text-align: left; padding: 14px 0 0 0; color: rgba(168,85,247,0.7); }
+        .fork-universe .sw-spine { width: 24px; }
+        .fork-universe .node-dot { left: 4px; border-color: rgba(168,85,247,0.5); width: 10px; height: 10px; top: 18px;}
+        .fork-universe .sw-content { padding-left: 8px; padding-right: 0;}
+        .fork-universe .session-card { background: var(--bg-base); border-color: transparent; border-left: 3px solid var(--fork-color); border-radius: 4px;}
+
+        /* 若 Fork 内自身也有 Compact 阶梯 */
+        .fork-universe .sw-row.history-1 { margin-left: 20px; margin-top: -8px;} /* Fork 自己的二层台阶 */
+        .fork-universe .sw-row.history-1 .session-card { opacity: 0.7; font-size: 0.9em; border-left-color: rgba(168,85,247,0.4);}
+        .fork-universe .sw-row.history-1 .sw-spine::after {
+            content: ''; position: absolute; top: 22px; left: 8px; width: 20px; height: 26px;
+            border-left: 2px solid rgba(168,85,247,0.2); border-bottom: 2px solid rgba(168,85,247,0.2); border-bottom-left-radius: 6px;
+        }
+        
     </style>
 </head>
 <body id="appBody">
 
     <header class="header">
-        <h1>⬡ CCSM | The Ultimate Spine View</h1>
-        <div style="font-size: 0.85rem; color: var(--text-muted);">
-            高度融合时间轴与血缘关系的终极展现，以及重新排版的四大详情模块。
+        <div class="header-title-area">
+            <h1>⬡ CCSM | The Parallel Block UI (最终修正版)</h1>
+            <div style="font-size: 0.85rem; color: var(--text-muted);">
+                完全摒弃了在全局时间流中画极细曲线的做法。Fork = 平行隔离盒子 + 原点锚框。
+            </div>
         </div>
     </header>
 
     <div class="app-container" id="appContainer">
-        <!-- 1. Worktree (Simplified) -->
         <div class="pane pane-worktree">
             <div class="pane-header">Worktrees</div>
             <div class="wt-item">📁 feature/gui-redesign</div>
         </div>
 
-        <!-- 2. The Spine List Pane -->
         <div class="pane pane-list">
             <div class="timeline-container">
                 
                 <div class="wf-group-header">
-                    TUI 详情及组件优化 <span>Active Workflow</span>
+                    GUI 开发与样式迭代 <span>Active Tree</span>
                 </div>
 
-                <!-- 节点 1：最新 (Compact继续) -->
-                <div class="sw-row active compact" onclick="openDrawer()">
-                    <div class="sw-time">现在 (Just now)</div>
+                <!-- 【1】 主干的 Active Compact (现在) -->
+                <div class="sw-row compact active">
+                    <div class="sw-time">现在<br/>(14:30)</div>
                     <div class="sw-spine">
                         <div class="node-dot"></div>
                     </div>
                     <div class="sw-content">
-                        <div class="session-card selected">
+                        <div class="session-card">
                             <div class="sc-title">
                                 Drawer 与详情精美排版
                                 <span class="badge compact">Compact</span>
                             </div>
-                            <div class="sc-summary">优化 B-2，寻找时间与依赖的完美融合，美化 Breakpoint。</div>
+                            <div class="sc-summary">这就是最新鲜的热乎主干节点。融合时间和依赖。</div>
                         </div>
                     </div>
                 </div>
 
-                <!-- 节点 2: 废弃 Fork 分支 -->
-                <div class="sw-row fork" onclick="openDrawer()">
-                    <div class="sw-time">13:15 PM</div>
+                <!-- 【2】 平行宇宙 (Fork Block Container) 
+                     它插入在时间流里（比如它最后一次活动是在 14:15）
+                     它不再拥有单独的一根全局横线，而是自己独立成盒 
+                -->
+                <div class="fork-universe">
+                    <!-- 顶部的 Origin Anchor -->
+                    <div class="fork-anchor">
+                        ⑂ Forked from: [主干：基础 Drawer 搭建 13:30]
+                    </div>
+                    
+                    <!-- 盒子内部展示：这条分支里到底发生了啥（也有自己的历程） -->
+                    <!-- Fork 的最新动作 -->
+                    <div class="sw-row">
+                        <div class="sw-time">14:15</div>
+                        <div class="sw-spine"><div class="node-dot"></div></div>
+                        <div class="sw-content">
+                            <div class="session-card">
+                                <div class="sc-title">
+                                    实验：放弃 Textual，用 THREE.js
+                                </div>
+                                <div class="sc-summary">在这个分支里，我继续探索了把 TUI 做成 3D 的神经病想法，这是该分支最新的阶段。</div>
+                            </div>
+                        </div>
+                    </div>
+                    <!-- Fork 分支自己本身的旧历史 (Fork 的父亲 - 也是这分支第一次切出去的节点) -->
+                    <div class="sw-row history-1">
+                        <div class="sw-time">13:15</div>
+                        <div class="sw-spine"><div class="node-dot"></div></div>
+                        <div class="sw-content">
+                            <div class="session-card">
+                                <div class="sc-title">
+                                    实验分支：尝试纯前端绘制树
+                                    <span class="badge" style="background:#4c1d95; color:white;">Fork Point</span>
+                                </div>
+                                <div class="sc-summary">刚从主干分出来时的初始测试节点。</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 【3】 主干的阶梯历史 1 (曾经在此被 Fork) -->
+                <div class="sw-row compact history-1">
+                    <div class="sw-time">13:30</div>
                     <div class="sw-spine">
-                        <div class="fork-curve"></div>
                         <div class="node-dot"></div>
                     </div>
                     <div class="sw-content">
                         <div class="session-card">
                             <div class="sc-title">
-                                尝试使用全屏纯前端绘制
-                                <span class="badge fork">Fork</span>
+                                基础 Drawer 搭建
+                                <span class="badge compact">Compact (Past)</span>
                             </div>
-                            <div class="sc-summary">实验未竟：纯前端难以复用 python 工具链，分支废弃。</div>
+                            <div class="sc-summary">实现 CSS Overlay，恰好上面那个怪异分支就是看到这步以后忍不住去试验的。</div>
                         </div>
                     </div>
                 </div>
 
-                <!-- 节点 3: 以前的节点 (Compact 的父亲) -->
-                <div class="sw-row compact" onclick="openDrawer()">
-                    <div class="sw-time">11:30 AM</div>
+                <!-- 【4】 主干的阶梯历史 2 -->
+                <div class="sw-row compact history-2">
+                    <div class="sw-time">12:00</div>
                     <div class="sw-spine">
                         <div class="node-dot"></div>
                     </div>
                     <div class="sw-content">
                         <div class="session-card">
                             <div class="sc-title">
-                                基础 Drawer 与双栏框架搭建
-                                <span class="badge compact">Compact Root</span>
+                                双栏框架初探
+                                <span class="badge compact">Root</span>
                             </div>
-                            <div class="sc-summary">实现 CSS Overlay 以及基础两栏占比折叠结构。</div>
                         </div>
                     </div>
                 </div>
 
                 <div class="wf-group-header" style="margin-top: 60px; color: var(--text-dim);">
-                    解析器稳定性修复 <span>Completed</span>
+                    散落任务 <span>History</span>
                 </div>
-                <!-- 节点 4: 旧的独立节点 -->
-                <div class="sw-row" onclick="openDrawer()">
-                    <div class="sw-time">昨天 16:00</div>
+                
+                <div class="sw-row node-independent">
+                    <div class="sw-time">前天 16:00</div>
                     <div class="sw-spine">
-                        <div class="node-dot" style="background:var(--text-dim); border:none;"></div>
+                        <div class="node-dot" style="background:var(--bg-base); border-color:var(--text-dim);"></div>
                     </div>
                     <div class="sw-content">
                         <div class="session-card" style="opacity: 0.6;">
                             <div class="sc-title">Parser 边界修复</div>
-                            <div class="sc-summary">修复遇到非法 JSONL 结构时的宕机。</div>
-                        </div>
-                    </div>
-                </div>
-
-            </div>
-        </div>
-
-        <!-- 3. Drawer Overlay & Panel -->
-        <div class="drawer-overlay" onclick="closeDrawer()"></div>
-        <div class="drawer-panel">
-            <button class="drawer-close" onclick="closeDrawer()">×</button>
-            <div class="drawer-content">
-
-                <!-- 1. Meta / Summary -->
-                <div class="det-summary">
-                    <h2 class="det-title">Drawer 与详情精美排版</h2>
-                    <div class="det-meta-row">
-                        <span>🟢 Active</span>
-                        <span>⏱ 28 Messages</span>
-                        <span>📁 ccsm/web_demo</span>
-                    </div>
-                    <div class="det-intent">
-                        <span style="font-size: 1.2rem;">💡</span>
-                        <div>"发挥一下想象力，怎么去融合时间和 session 关系，最后重构一下四个 Detail 区块使之不那么密集。"</div>
-                    </div>
-                </div>
-
-                <!-- 2. Breakpoint (The core focus) -->
-                <div class="det-breakpoint">
-                    <h3>完成 Spine View (主干枝杈) 混合时间线</h3>
-                    <p>利用左对齐时间列，辅助居中的图形化 Spine（主继承用粗直线相连，Fork 用曲线挑出），从而实现物理“向下流动”也就是时间“向前滚动”的同时，让依赖关系一眼清。</p>
-                </div>
-
-                <!-- 3. Milestones Stepper -->
-                <div class="det-milestones">
-                    <div class="det-block-title">任务进度 (Milestones)</div>
-                    <div class="ms-list">
-                        <div class="ms-item done">
-                            <div class="ms-item-dot"></div>
-                            提出 2 栏与弹窗重设计方案，收纳信息量。
-                        </div>
-                        <div class="ms-item active">
-                            <div class="ms-item-dot"></div>
-                            对 Sessions 列表引入 Spine V-Line 时间线，抛弃传统缩进。
-                        </div>
-                        <div class="ms-item pending">
-                            <div class="ms-item-dot"></div>
-                            将此 Demo 还原至 Python Textual 组件体系。
-                        </div>
-                    </div>
-                </div>
-
-                <!-- 4. Last Reply -->
-                <div class="det-last-reply">
-                    <div class="det-block-title">Claude 最后回复现场</div>
-                    <div class="chat-bubble">
-                        <div class="chat-avatar">AI</div>
-                        <div class="chat-msg">
-                            我重新整合了四个区块的样式设计：<br><br>
-                            1. **Summary / Meta** 被设计为通透的玻璃态标题和一句引用语（Intent）。<br>
-                            2. **Breakpoint** 被赋予了醒目的渐变高亮框和悬浮 Tag，它是眼睛的第一落点。<br>
-                            3. **Milestones** 改为更克制的带虚线的 Stepper。<br>
-                            4. **Last Reply** 则复原了对话气泡的样式，与前三者显著区隔。<br><br>
-                            你只要通过 <code>openDrawer()</code> 测试下它的视觉层次即可！
+                            <div class="sc-summary">完全独立的远古任务。</div>
                         </div>
                     </div>
                 </div>
@@ -359,17 +274,5 @@
             </div>
         </div>
     </div>
-
-    <script>
-        function openDrawer() {
-            document.getElementById('appContainer').classList.add('drawer-open');
-        }
-        function closeDrawer() {
-            document.getElementById('appContainer').classList.remove('drawer-open');
-        }
-        document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape') closeDrawer();
-        });
-    </script>
 </body>
 </html>

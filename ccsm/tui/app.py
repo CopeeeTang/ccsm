@@ -25,9 +25,20 @@ class CCSMApp(App):
 
     SCREENS = {"main": MainScreen}
 
+    BINDINGS = [
+        ("t", "toggle_theme", "Theme"),
+    ]
+
     def on_mount(self) -> None:
         """Push the main screen on startup."""
         self.push_screen("main")
+
+    def action_toggle_theme(self) -> None:
+        """Toggle light and dark mode."""
+        if self.has_class("-light-theme"):
+            self.remove_class("-light-theme")
+        else:
+            self.add_class("-light-theme")
 
 
 def run() -> None:

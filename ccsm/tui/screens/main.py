@@ -35,7 +35,12 @@ from ccsm.core.parser import (
     parse_session_info,
     parse_session_messages,
 )
-from ccsm.core.summarizer import generate_ai_title_sync, summarize_session
+from ccsm.core.summarizer import (
+    extract_facts_sync,
+    generate_ai_title_sync,
+    generate_digest_sync,
+    summarize_session,
+)
 from ccsm.core.status import classify_all
 from ccsm.models.session import Project, SessionInfo, SessionMeta, Status, WorkflowCluster, Worktree
 from ccsm.tui.screens.drawer import SessionDetailDrawer
@@ -95,7 +100,6 @@ class MainScreen(Screen):
         ("4", "switch_tab_4", "Done"),
         ("0", "switch_tab_all", "All"),
         ("D", "batch_archive", "Archive"),
-        ("g", "toggle_graph", "View"),
     ]
 
     def __init__(self, **kwargs) -> None:
@@ -113,6 +117,7 @@ class MainScreen(Screen):
         self._search_active: bool = False  # Whether search input is visible
         self._lineage_signals: dict[str, LineageSignals] = {}  # Pain point #1,5,7,8
         self._lineage_types: dict[str, str] = {}  # session_id → "fork"/"compact"/"duplicate"
+        self._lineage_graph: dict = {}  # session_id → SessionLineage (parent/child DAG)
         self._session_index = SessionIndex()  # Pain point #3,4
         self._workflow_cluster: Optional[WorkflowCluster] = None  # v2: workflow data
         self._ai_cluster_timer = None  # Timer for background AI clustering
@@ -138,7 +143,7 @@ class MainScreen(Screen):
             " [#d97757]↑↓[/] Navigate  "
             "[#d97757]0-4[/] Filter  [#d97757]/[/] Search  "
             "[#d97757]Enter[/] Detail  [#d97757]r[/] Resume  [#d97757]s[/] AI  "
-            "[#d97757]g[/] View  [#d97757]D[/] Archive  [#d97757]q[/] Quit",
+            "[#d97757]D[/] Archive  [#d97757]q[/] Quit",
             id="footer-bar",
         )
 
@@ -248,7 +253,7 @@ class MainScreen(Screen):
             all_meta=self._all_meta,
             last_thoughts=self._last_thoughts,
             lineage_types=self._lineage_types,
-            workflow_cluster=self._workflow_cluster,
+            lineage_graph=self._lineage_graph,
         )
 
     # ── Worktree selection ──────────────────────────────────────────────────
@@ -409,7 +414,7 @@ class MainScreen(Screen):
 
             self.app.call_from_thread(
                 self._on_sessions_parsed, parsed, last_thoughts, label,
-                lineage_types, lineage_signals_local, wf_cluster,
+                lineage_types, lineage_signals_local, wf_cluster, graph,
             )
         except Exception as e:
             logger.warning("Failed to parse sessions: %s", e)
@@ -422,6 +427,7 @@ class MainScreen(Screen):
         lineage_types: dict[str, str] | None = None,
         lineage_signals: dict[str, LineageSignals] | None = None,
         workflow_cluster: Optional[WorkflowCluster] = None,
+        lineage_graph: dict | None = None,
     ) -> None:
         """Update UI with parsed sessions."""
         self._current_sessions = sessions
@@ -430,6 +436,7 @@ class MainScreen(Screen):
         self._lineage_types = dict(lineage_types) if lineage_types else {}
         self._lineage_signals = dict(lineage_signals) if lineage_signals else {}
         self._workflow_cluster = workflow_cluster
+        self._lineage_graph = dict(lineage_graph) if lineage_graph else {}
 
         # Clear stale selected session if it's not in the new dataset
         if self._selected_session:
@@ -491,23 +498,6 @@ class MainScreen(Screen):
                 1.5,
                 lambda: self._try_silent_summary(session),
             )
-
-    def on_session_list_panel_workflow_selected(
-        self, event: SessionListPanel.WorkflowSelected
-    ) -> None:
-        """Open detail Drawer for workflow detail."""
-        self._selected_session = None
-        self._drawer = SessionDetailDrawer()
-        self.app.push_screen(self._drawer)
-        session_statuses = {s.session_id: s.status for s in self._current_sessions}
-        # Delay show until drawer is mounted
-        self.set_timer(0.1, lambda: self._drawer.show_workflow_detail(event.workflow, session_statuses))
-
-    def on_session_list_panel_view_mode_changed(
-        self, event: SessionListPanel.ViewModeChanged
-    ) -> None:
-        """React to view mode change in middle panel."""
-        pass  # Drawer-based: no auto-show of workflow overview
 
     @work(thread=True)
     def _load_session_detail(self, session: SessionInfo) -> None:
@@ -630,6 +620,9 @@ class MainScreen(Screen):
     def _run_llm_summarize(self, session: SessionInfo, silent: bool = False) -> None:
         """Call LLM summarizer in background thread.
 
+        Pipeline: summary (milestones) → digest (5-dimension) → facts (atomic).
+        All three are cached; UI is updated once after all complete.
+
         Args:
             silent: If True, don't show notifications (used for auto-summary).
         """
@@ -640,6 +633,38 @@ class MainScreen(Screen):
                 mode="llm",
                 force=not silent,  # Silent mode uses cache if available
             )
+
+            # Chain: generate digest after summary
+            compact_text = (
+                session.compact_summaries[-1]
+                if session.compact_summaries
+                else None
+            )
+            digest = generate_digest_sync(
+                session_id=session.session_id,
+                jsonl_path=session.jsonl_path,
+                compact_summary_text=compact_text,
+                milestones=summary.milestones,
+                force=not silent,
+            )
+            if digest:
+                summary.digest = digest
+
+            # Chain: extract facts after digest
+            facts = extract_facts_sync(
+                session_id=session.session_id,
+                compact_summary_text=compact_text,
+                milestones=summary.milestones,
+                digest=summary.digest,
+                force=not silent,
+            )
+            if facts:
+                summary.facts = facts
+
+            # Save once with all three results
+            if digest or facts:
+                from ccsm.core.meta import save_summary
+                save_summary(summary)
 
             # Only update UI if user is still on the same session
             if (
@@ -709,7 +734,7 @@ class MainScreen(Screen):
             all_meta=self._all_meta,
             last_thoughts=self._last_thoughts,
             lineage_types=self._lineage_types,
-            workflow_cluster=self._workflow_cluster,
+            lineage_graph=self._lineage_graph,
         )
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
@@ -935,13 +960,6 @@ class MainScreen(Screen):
         # Final refresh
         self.app.call_from_thread(self._update_session_list)
 
-    # ── View toggle (list ↔ swimlane) ────────────────────────────────
-
-    def action_toggle_graph(self) -> None:
-        """Toggle middle panel between list and swimlane view (g key)."""
-        panel = self.query_one(SessionListPanel)
-        panel.toggle_view_mode()
-
     def _try_ai_workflow_naming(self) -> None:
         """Trigger background AI workflow naming if not already cached."""
         if not self._workflow_cluster:
@@ -990,15 +1008,9 @@ class MainScreen(Screen):
             save_workflows(updated)
 
             # Refresh detail panel if still showing workflows
-            if not self._selected_session:
-                session_statuses = {
-                    s.session_id: s.status for s in self._current_sessions
-                }
-                self.app.call_from_thread(
-                    lambda: self.query_one(SessionDetail).show_workflows(
-                        updated, session_statuses
-                    )
-                )
+            # NOTE: In Drawer architecture, SessionDetail lives inside
+            # ModalScreen, not MainScreen. Skip direct query to avoid NoMatches.
+            # Workflow display will be refreshed next time user opens a drawer.
 
             logger.info("AI workflow naming completed: %d workflows", len(updated.workflows))
         except Exception as e:

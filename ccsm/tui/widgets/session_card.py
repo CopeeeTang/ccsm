@@ -22,11 +22,11 @@ from textual.widgets import Static
 
 from ccsm.models.session import SessionInfo, SessionMeta, Status
 
-# Lineage badge colors
+# Lineage badge colors — more prominent labels
 _LINEAGE_BADGES = {
-    "fork": ("⑂", "lineage-fork"),
-    "compact": ("⟳", "lineage-compact"),
-    "duplicate": ("⊕", "lineage-dup"),
+    "fork": ("⑂ Fork", "lineage-fork"),
+    "compact": ("⟳ Compact", "lineage-compact"),
+    "duplicate": ("⊕ Dup", "lineage-dup"),
 }
 
 # Status inline tags: (icon, label, css_class)
@@ -97,9 +97,10 @@ class SessionCard(Widget):
     def __init__(
         self,
         session: SessionInfo,
-        meta: SessionMeta | None = None,
+        meta: "SessionMeta | None" = None,
         last_thought: str = "",
         lineage_type: str | None = None,
+        is_fork_point: bool = False,
         spine_time: str = "",
         spine_graph: str = "",
         **kwargs,
@@ -108,6 +109,7 @@ class SessionCard(Widget):
         self.session = session
         self.meta = meta
         self._lineage_type = lineage_type
+        self._is_fork_point = is_fork_point
         self._spine_time = spine_time
         self._spine_graph = spine_graph
 
@@ -115,17 +117,23 @@ class SessionCard(Widget):
         """Build card layout as nested Textual widgets."""
         s = self.session
 
-        # ── Spine gutter (time + graph connector) ──
-        if self._spine_time or self._spine_graph:
-            time_part = self._spine_time or ""
-            graph_part = self._spine_graph or "┃"
-            yield Static(
-                f"[#78716c]{rich_escape(time_part)}[/]\n[#3a3835]{rich_escape(graph_part)}[/]",
-                classes="card-spine",
-            )
+        # ── Spine gutter (just time now, graph is hidden via CSS) ──
+        if self._spine_time:
+            time_part = self._spine_time
+            time_color = "#d97757" if s.is_running else "#78716c"
+
+            with Vertical(classes="card-spine"):
+                yield Static(
+                    f"[{time_color} bold]{rich_escape(time_part)}[/]",
+                    classes="card-spine-time",
+                )
 
         # ── Card body ──
-        with Vertical(classes="card-body"):
+        body_classes = "card-body"
+        if self._lineage_type == "fork":
+            body_classes += " -fork-body"
+            
+        with Vertical(classes=body_classes):
             # ── Row 1: Title + status + lineage + time ──
             with Horizontal(classes="card-row-title"):
                 # Running indicator
@@ -157,11 +165,37 @@ class SessionCard(Widget):
                     badge_icon, badge_class = _LINEAGE_BADGES[self._lineage_type]
                     yield Static(badge_icon, classes=f"card-badge {badge_class}")
 
-                # Relative time (right-aligned)
+                # Fork Point badge
+                if self._is_fork_point:
+                    yield Static("⑂ Fork Point", classes="badge-fork-point")
+
+                # Relative time + duration/model (right-aligned)
                 time_str = _relative_time(s.last_timestamp)
-                if time_str:
+
+                # Build compact extra info
+                extra_parts = []
+                if s.last_timestamp and s.first_timestamp and s.last_timestamp > s.first_timestamp:
+                    diff = (s.last_timestamp - s.first_timestamp).total_seconds()
+                    if diff < 60:
+                        extra_parts.append(f"{int(diff)}s")
+                    elif diff < 3600:
+                        extra_parts.append(f"{int(diff // 60)}m")
+                    else:
+                        extra_parts.append(f"{int(diff // 3600)}h{int((diff % 3600) // 60)}m")
+
+                model_str = s.model_name or ""
+                if model_str.startswith("claude-"):
+                    model_str = model_str[7:]
+                if model_str:
+                    extra_parts.append(model_str)
+
+                right_label = time_str
+                if extra_parts:
+                    right_label = f"{'·'.join(extra_parts)}  {time_str}" if time_str else '·'.join(extra_parts)
+
+                if right_label:
                     yield Static(
-                        f"[#78716c]{rich_escape(time_str)}[/]",
+                        f"[#78716c]{rich_escape(right_label)}[/]",
                         classes="card-time",
                     )
 

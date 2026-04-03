@@ -48,7 +48,7 @@ class SessionDetailDrawer(ModalScreen):
 
     DEFAULT_CSS = """
     SessionDetailDrawer {
-        align: right middle;
+        align: center middle;
     }
     """
 

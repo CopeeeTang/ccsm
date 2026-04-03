@@ -17,6 +17,7 @@ import os
 from datetime import datetime, timezone
 from typing import Optional
 
+from rich.cells import cell_len
 from rich.markup import escape as rich_escape
 from textual.message import Message
 from textual.widgets import Static
@@ -174,18 +175,34 @@ class Swimlane(Static):
 def _build_time_header(
     min_t: datetime, max_t: datetime, width: int,
 ) -> str:
-    """Build a clean non-overlapping time header."""
+    """Build a compact non-overlapping time header."""
     width = max(12, width)
     start = min_t.strftime("%m-%d %H:%M")
     end = max_t.strftime("%m-%d %H:%M")
-    label = f"{start} -> {end}"
+    label = f"Time {start} -> {end}"
     if len(label) > width:
         label = f"{min_t.strftime('%m-%d')} -> {max_t.strftime('%m-%d')}"
     if len(label) > width:
         label = label[: width - 1] + "…"
-    line1 = label.ljust(width)
-    line2 = "|" + "-" * (width - 2) + "|" if width >= 3 else "-" * width
-    return f"{line1}\n {line2}"
+    return label.ljust(width)
+
+
+def _truncate_cells(text: str, max_cells: int) -> str:
+    """Truncate text by terminal cell width (CJK-safe)."""
+    s = text.replace("\n", " ").strip()
+    if max_cells <= 1:
+        return ""
+    if cell_len(s) <= max_cells:
+        return s
+    out: list[str] = []
+    used = 0
+    for ch in s:
+        ch_w = cell_len(ch)
+        if used + ch_w > max_cells - 1:
+            break
+        out.append(ch)
+        used += ch_w
+    return "".join(out).rstrip() + "…"
 
 
 def render_swimlane_text(
@@ -232,7 +249,8 @@ def render_swimlane_text(
 
     for wf in workflows:
         lane_start_y = current_line
-        lane_line = _build_lane(wf, min_t, span, lane_width, statuses, current_session_id)
+        track_width = max(14, min(26, lane_width // 2)) if compact else lane_width
+        lane_line = _build_lane(wf, min_t, span, track_width, statuses, current_session_id)
 
         # Determine dominant status for label icon
         all_sids = list(wf.sessions)
@@ -246,19 +264,20 @@ def render_swimlane_text(
         tag_icon = _STATUS_TAGS.get(wf_status, "D")
 
         name_raw = (wf.display_name or "").replace("\n", " ").strip()
-        max_name_len = max(14, lane_width - 18) if compact else 64
-        if len(name_raw) > max_name_len:
-            name_raw = name_raw[: max_name_len - 1] + "…"
-        name_raw = rich_escape(name_raw)
         count_info = f"{wf.session_count}s"
 
         if compact:
-            lines.append(f" {lane_line}")
-            current_line += 1
-            lines.append(f"   {tag_icon} {name_raw}  {count_info}")
+            prefix = f" {tag_icon} {lane_line} {count_info} "
+            remain = max(8, lane_width - cell_len(prefix))
+            name_disp = rich_escape(_truncate_cells(name_raw, remain))
+            lines.append(prefix + name_disp)
             current_line += 1
         else:
-            lines.append(f" {lane_line}  {tag_icon} {name_raw}  {count_info}")
+            max_name_len = 64
+            if len(name_raw) > max_name_len:
+                name_raw = name_raw[: max_name_len - 1] + "…"
+            name_disp = rich_escape(name_raw)
+            lines.append(f" {lane_line}  {tag_icon} {name_disp}  {count_info}")
             current_line += 1
             for branch in wf.fork_branches[:2]:
                 fork_label = rich_escape(branch[0][:8]) if branch else "?"
@@ -294,7 +313,16 @@ def _build_lane(
     if not wf.first_timestamp or not wf.last_timestamp:
         return "".join(lane)
 
-    all_sids = wf.sessions
+    all_sids = list(wf.sessions)
+    # In narrow lanes, too many nodes become visual noise ("+-+-+-").
+    # Keep a sampled subset while preserving start/end progression.
+    max_points = max(4, width // 3)
+    if len(all_sids) > max_points:
+        keep_idx = {
+            round(i * (len(all_sids) - 1) / (max_points - 1))
+            for i in range(max_points)
+        }
+        all_sids = [sid for i, sid in enumerate(all_sids) if i in keep_idx]
     positions = []
 
     for i, sid in enumerate(all_sids):
