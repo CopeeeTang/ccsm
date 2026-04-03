@@ -259,8 +259,43 @@ class SessionListPanel(VerticalScroll):
         else:
             self._rebuild_list()
 
+    def _build_spine_data(self, filtered: list[SessionInfo]) -> list[dict]:
+        """Generate spine graph prefixes for each session card.
+
+        Returns a list of dicts with 'time' and 'graph' keys.
+        The spine creates a visual timeline with connectors.
+        """
+        from datetime import timezone
+
+        spine_data = []
+        for i, session in enumerate(filtered):
+            lineage = self._lineage_types.get(session.session_id)
+            is_last = (i == len(filtered) - 1)
+
+            # Time label (HH:MM format from last_timestamp, local time)
+            time_label = ""
+            if session.last_timestamp:
+                ts = session.last_timestamp
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                time_label = ts.strftime("%H:%M")
+
+            # Spine graph character
+            if lineage == "fork":
+                graph = "┣━▶"
+            elif is_last:
+                graph = "┗━●"
+            else:
+                graph = "┃ ●"
+
+            spine_data.append({
+                "time": time_label,
+                "graph": graph,
+            })
+        return spine_data
+
     def _rebuild_list(self) -> None:
-        """Render session cards (list view)."""
+        """Render session cards (list view) with spine timeline."""
         # Filter sessions by active filter
         if self._active_filter is not None:
             filtered = [
@@ -293,13 +328,19 @@ class SessionListPanel(VerticalScroll):
             )
             return
 
-        for session in filtered:
+        # Generate spine timeline data
+        spine_data = self._build_spine_data(filtered)
+
+        for i, session in enumerate(filtered):
             meta = self._all_meta.get(session.session_id)
             thought = self._last_thoughts.get(session.session_id, "")
             lineage_type = self._lineage_types.get(session.session_id)
+            spine = spine_data[i] if i < len(spine_data) else {}
             card = SessionCard(
                 session, meta=meta, last_thought=thought,
                 lineage_type=lineage_type,
+                spine_time=spine.get("time", ""),
+                spine_graph=spine.get("graph", ""),
             )
             if session.session_id == self._selected_id:
                 card.selected = True
@@ -318,14 +359,21 @@ class SessionListPanel(VerticalScroll):
 
         session_statuses = {s.session_id: s.status for s in self._sessions}
 
+        # Pre-render content with estimated width (avoid size=0 on mount)
+        content_width = max(40, (self.size.width or 60) - 4)
         widget = Swimlane()
         self.mount(widget)
-        widget.set_data(
-            self._workflow_cluster,
-            statuses=session_statuses,
-            current_session_id=self._selected_id,
-            compact=True,
-        )
+
+        # Defer set_data until after mount so widget has valid dimensions
+        def _deferred_set_data():
+            widget.set_data(
+                self._workflow_cluster,
+                statuses=session_statuses,
+                current_session_id=self._selected_id,
+                compact=True,
+            )
+
+        self.call_after_refresh(_deferred_set_data)
 
     def toggle_noise(self) -> None:
         """Toggle visibility of NOISE sessions."""

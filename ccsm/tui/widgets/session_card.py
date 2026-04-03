@@ -1,6 +1,7 @@
-"""Session card widget for the middle panel.
+"""Session card widget for the session list panel.
 
-Two-line compact layout:
+Three-line Spine View layout:
+  Spine prefix: time (HH:MM) + graph connector (┃●/┣━━▶/┗━●)
   Line 1: title (white) + status tag (colored dot+text) + lineage badge + relative time (right-aligned)
   Line 2: 📝 AI intent / first user content (muted) + 💬 message count (right-aligned)
 """
@@ -9,6 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from rich.cells import cell_len
 from rich.markup import escape as rich_escape
 from textual.message import Message
 from textual.reactive import reactive
@@ -57,6 +59,26 @@ def _relative_time(dt: datetime | None) -> str:
     return f"{days // 30}mo ago"
 
 
+def _clean_intent_text(text: str) -> str:
+    """Clean numbered/listed text into concise intent form.
+
+    Transforms patterns like:
+      "1.添加GPT-5.4支持 2.检查soul.md"  → "添加GPT-5.4支持；检查soul.md"
+      "1) first task 2) second"           → "first task；second"
+    Also strips leading emoji/bullet markers.
+    """
+    import re
+    text = text.replace("\n", " ").strip()
+    # Pattern: number followed by separator at start-of-string or after space/punctuation
+    # Must be preceded by string-start or whitespace to avoid matching "GPT-5.4"
+    parts = re.split(r'(?:^|(?<=\s))\d+[\.\)、]\s*', text)
+    parts = [p.strip() for p in parts if p.strip()]
+    if len(parts) > 1:
+        # Join with Chinese semicolon (concise)
+        return "；".join(parts)
+    return text
+
+
 def _truncate(text: str, max_len: int) -> str:
     """Truncate text with ellipsis."""
     text = text.replace("\n", " ").strip()
@@ -83,21 +105,38 @@ class SessionCard(Static):
         meta: SessionMeta | None = None,
         last_thought: str = "",  # deprecated, kept for caller compat
         lineage_type: str | None = None,  # "fork" | "compact" | "duplicate" | None
+        spine_time: str = "",      # Time label for spine view (e.g. "11:30")
+        spine_graph: str = "",     # Graph connector (e.g. "┃ ●")
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
         self.session = session
         self.meta = meta
         self._lineage_type = lineage_type
+        self._spine_time = spine_time
+        self._spine_graph = spine_graph
 
     def render(self) -> str:
-        """Render the card content as Rich markup (two-line layout).
+        """Render the card content as Rich markup (Spine View layout).
 
+        Spine prefix: [HH:MM  ┃ ●]  (14 cols reserved)
         Line 1: title + status_tag + lineage_badge + relative_time (right-aligned)
         Line 2: intent + message count (right-aligned)
         """
         s = self.session
         w = self.size.width or 60
+
+        # ── Spine prefix (14 cols) ─────────────────────────────────────
+        SPINE_WIDTH = 14
+        if self._spine_time or self._spine_graph:
+            # Time: pad to 5 chars, Graph: pad rest
+            time_part = self._spine_time.ljust(5) if self._spine_time else "     "
+            graph_part = self._spine_graph or " "
+            spine_prefix = f"[#78716c]{time_part}[/] [#44403c]{graph_part}[/] "
+            content_width = w - SPINE_WIDTH
+        else:
+            spine_prefix = ""
+            content_width = w
 
         # ── Line 1: title + status tag + lineage badge + relative time ──
 
@@ -110,7 +149,7 @@ class SessionCard(Static):
             s.status, ("?", "?", "#78716c")
         )
         tag_markup = f" [{tag_color}]{tag_icon}{tag_label}[/]"
-        tag_visible_len = 1 + len(tag_icon) + len(tag_label)  # space + icon + label
+        tag_visible_len = 1 + cell_len(tag_icon) + len(tag_label)  # space + icon + label
 
         # Lineage badge (pain point #1: distinguish fork/compact/dup)
         badge_markup = ""
@@ -133,17 +172,18 @@ class SessionCard(Static):
         # Budget: running_prefix + title + tag + badge + gap(2) + time
         max_title_len = max(
             10,
-            w - running_prefix_width - tag_visible_len - badge_width - 2 - time_visible_len,
+            content_width - running_prefix_width - tag_visible_len - badge_width - 2 - time_visible_len,
         )
         title_truncated = _truncate(title, max_title_len)
         title_display = rich_escape(title_truncated)
-        title_visible_len = len(title_truncated)
+        title_visible_len = cell_len(title_truncated)
 
         # Compute padding between left content and right-aligned time
         left_len = running_prefix_width + title_visible_len + tag_visible_len + badge_width
-        padding1 = max(1, w - left_len - time_visible_len)
+        padding1 = max(1, content_width - left_len - time_visible_len)
 
         line1 = (
+            f"{spine_prefix}"
             f"{running_prefix}"
             f"[#e7e5e4]{title_display}[/]"
             f"{tag_markup}"
@@ -162,28 +202,33 @@ class SessionCard(Static):
         # Left part: "  📝 \"intent...\""
         prefix_len = 7   # visible terminal width of '  📝 "' (emoji=2cols + 2spaces + space + quote)
         suffix_len = 1   # closing quote
-        max_intent_len = max(5, w - prefix_len - suffix_len - 1 - right_visible_len)
+        max_intent_len = max(5, content_width - prefix_len - suffix_len - 1 - right_visible_len)
+
+        # Spine indent for line 2 (match spine width with spaces)
+        spine_indent = " " * SPINE_WIDTH if (self._spine_time or self._spine_graph) else ""
 
         # Prefer AI-generated intent over raw first_user_content
         ai_intent = self.meta.ai_intent if self.meta else None
         first_msg = ai_intent or s.first_user_content or ""
+        if first_msg and not ai_intent:
+            first_msg = _clean_intent_text(first_msg)
         if first_msg:
             intent_truncated = _truncate(first_msg, max_intent_len)
             intent_display = rich_escape(intent_truncated)
-            intent_visible_len = len(intent_truncated)
+            intent_visible_len = cell_len(intent_truncated)
             left_len2 = prefix_len + intent_visible_len + suffix_len
-            padding2 = max(1, w - left_len2 - right_visible_len)
+            padding2 = max(1, content_width - left_len2 - right_visible_len)
             line2 = (
-                f"  [#a8a29e]\U0001f4dd \"{intent_display}\"[/]"
+                f"{spine_indent}  [#a8a29e]\U0001f4dd \"{intent_display}\"[/]"
                 f"{' ' * padding2}"
                 f"{right_markup}"
             )
         else:
             no_content = "  📝 (no content)"
             left_len2 = len(no_content) + 1   # +1 for emoji extra terminal width
-            padding2 = max(1, w - left_len2 - right_visible_len)
+            padding2 = max(1, content_width - left_len2 - right_visible_len)
             line2 = (
-                f"  [#44403c]\U0001f4dd (no content)[/]"
+                f"{spine_indent}  [#44403c]\U0001f4dd (no content)[/]"
                 f"{' ' * padding2}"
                 f"{right_markup}"
             )

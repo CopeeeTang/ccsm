@@ -1,10 +1,12 @@
-"""Main screen: three-panel layout with worktree tree, session list, and detail.
+"""Main screen: dual-panel layout with worktree tree and session list.
+
+Detail is shown via a right-side Drawer overlay (ModalScreen).
 
 This is the primary screen of the CCSM TUI. It:
 1. Discovers projects and worktrees on mount
 2. Parses session metadata asynchronously
 3. Classifies sessions by status/priority
-4. Handles panel navigation and session selection
+4. Opens detail Drawer on session selection
 """
 
 from __future__ import annotations
@@ -36,6 +38,7 @@ from ccsm.core.parser import (
 from ccsm.core.summarizer import generate_ai_title_sync, summarize_session
 from ccsm.core.status import classify_all
 from ccsm.models.session import Project, SessionInfo, SessionMeta, Status, WorkflowCluster, Worktree
+from ccsm.tui.screens.drawer import SessionDetailDrawer
 from ccsm.tui.widgets.session_detail import SessionDetail
 from ccsm.tui.widgets.session_list import SessionListPanel
 from ccsm.tui.widgets.worktree_tree import WorktreeTree
@@ -46,6 +49,7 @@ logger = logging.getLogger(__name__)
 
 def _is_meaningless_title(title: str) -> bool:
     """Check if a session title is meaningless and should be replaced by AI."""
+    import re
     if not title:
         return True
     t = title.strip()
@@ -59,10 +63,25 @@ def _is_meaningless_title(title: str) -> bool:
     parts = t.split("-")
     if len(parts) == 3 and all(p.isalpha() for p in parts):
         return True
+    # Session ID prefix (8-char hex like "06d166cd")
+    if re.match(r'^[0-9a-f]{6,12}$', t):
+        return True
+    # UUID-style IDs (e.g., "0b963606-29b...")
+    if re.match(r'^[0-9a-f]{8}-[0-9a-f]', t):
+        return True
+    # Contains XML/HTML tags (system injection pollution)
+    if '<' in t and '>' in t:
+        return True
+    # Starts with command prefix markers
+    if t.startswith("❯ /"):
+        return True
+    # Single common word titles that aren't meaningful
+    if t.lower() in {"cli", "test", "debug", "hi", "hello", "help"}:
+        return True
     return False
 
 class MainScreen(Screen):
-    """Primary three-panel screen."""
+    """Primary dual-panel screen with Drawer overlay for detail."""
 
     BINDINGS = [
         ("q", "quit", "Quit"),
@@ -70,8 +89,6 @@ class MainScreen(Screen):
         ("s", "summarize_llm", "AI Summary"),
         ("h", "toggle_noise", "Toggle noise"),
         ("slash", "search", "Search"),
-        ("tab", "focus_next_panel", "Next panel"),
-        ("shift+tab", "focus_previous_panel", "Prev panel"),
         ("1", "switch_tab_1", "Active"),
         ("2", "switch_tab_2", "Back"),
         ("3", "switch_tab_3", "Idea"),
@@ -99,6 +116,7 @@ class MainScreen(Screen):
         self._session_index = SessionIndex()  # Pain point #3,4
         self._workflow_cluster: Optional[WorkflowCluster] = None  # v2: workflow data
         self._ai_cluster_timer = None  # Timer for background AI clustering
+        self._drawer: Optional[SessionDetailDrawer] = None  # Active drawer
 
     def compose(self) -> ComposeResult:
         yield Static("⬡ CCSM — Claude Code Session Manager", id="header-bar")
@@ -107,7 +125,7 @@ class MainScreen(Screen):
             with Vertical(id="worktree-panel"):
                 yield Static(" WORKTREES", classes="panel-title")
                 yield WorktreeTree()
-            # Middle panel: Session list (dual mode: list / swimlane)
+            # Right panel: Session list (dual mode: list / swimlane)
             with Vertical(id="session-panel"):
                 yield Static(" SESSIONS", classes="panel-title")
                 yield Input(
@@ -116,14 +134,10 @@ class MainScreen(Screen):
                     classes="search-input -hidden",
                 )
                 yield SessionListPanel()
-            # Right panel: Session detail
-            with Vertical(id="detail-panel"):
-                yield Static(" DETAIL", classes="panel-title")
-                yield SessionDetail()
         yield Static(
-            " [#fb923c]↑↓[/] Navigate  [#fb923c]Tab[/] Panel  "
+            " [#fb923c]↑↓[/] Navigate  "
             "[#fb923c]0-4[/] Filter  [#fb923c]/[/] Search  "
-            "[#fb923c]r[/] Resume  [#fb923c]s[/] AI  "
+            "[#fb923c]Enter[/] Detail  [#fb923c]r[/] Resume  [#fb923c]s[/] AI  "
             "[#fb923c]g[/] View  [#fb923c]D[/] Archive  [#fb923c]q[/] Quit",
             id="footer-bar",
         )
@@ -432,12 +446,6 @@ class MainScreen(Screen):
 
         self._update_session_list()
 
-        # Show workflow overview in detail panel (before any session is selected)
-        if self._workflow_cluster and not self._selected_session:
-            detail = self.query_one(SessionDetail)
-            session_statuses = {s.session_id: s.status for s in self._current_sessions}
-            detail.show_workflows(self._workflow_cluster, session_statuses)
-
         # Schedule silent AI naming after 2s (non-blocking)
         if self._ai_cluster_timer:
             self._ai_cluster_timer.stop()
@@ -454,7 +462,7 @@ class MainScreen(Screen):
     def on_session_list_panel_session_selected(
         self, event: SessionListPanel.SessionSelected
     ) -> None:
-        """Display session detail when a card is selected.
+        """Open detail Drawer when a card is selected.
 
         Also schedules silent AI summary after 1.5s hover (if no cached LLM summary).
         """
@@ -466,7 +474,9 @@ class MainScreen(Screen):
             self._auto_summary_timer.stop()
             self._auto_summary_timer = None
 
-        # Load detail immediately (rule-based extract)
+        # Open Drawer and start loading detail
+        self._drawer = SessionDetailDrawer()
+        self.app.push_screen(self._drawer)
         self._load_session_detail(session)
 
         # Schedule silent LLM summary after 1.5s if:
@@ -485,23 +495,19 @@ class MainScreen(Screen):
     def on_session_list_panel_workflow_selected(
         self, event: SessionListPanel.WorkflowSelected
     ) -> None:
-        """Display workflow detail when a swimlane lane is clicked."""
+        """Open detail Drawer for workflow detail."""
         self._selected_session = None
-        detail = self.query_one(SessionDetail)
+        self._drawer = SessionDetailDrawer()
+        self.app.push_screen(self._drawer)
         session_statuses = {s.session_id: s.status for s in self._current_sessions}
-        detail.show_workflow_detail(event.workflow, session_statuses)
+        # Delay show until drawer is mounted
+        self.set_timer(0.1, lambda: self._drawer.show_workflow_detail(event.workflow, session_statuses))
 
     def on_session_list_panel_view_mode_changed(
         self, event: SessionListPanel.ViewModeChanged
     ) -> None:
         """React to view mode change in middle panel."""
-        if event.mode == "swimlane" and self._workflow_cluster:
-            if not self._selected_session:
-                detail = self.query_one(SessionDetail)
-                session_statuses = {
-                    s.session_id: s.status for s in self._current_sessions
-                }
-                detail.show_workflows(self._workflow_cluster, session_statuses)
+        pass  # Drawer-based: no auto-show of workflow overview
 
     @work(thread=True)
     def _load_session_detail(self, session: SessionInfo) -> None:
@@ -557,14 +563,14 @@ class MainScreen(Screen):
         detail_data=None,
         compact_parsed=None,
     ) -> None:
-        """Update detail panel on UI thread."""
-        # Only update if this session is still selected
+        """Update Drawer detail on UI thread."""
+        # Only update if this session is still selected and drawer is open
         if self._selected_session and self._selected_session.session_id == session.session_id:
-            detail = self.query_one(SessionDetail)
-            detail.show_session(
-                session, meta=meta, summary=summary, last_replies=replies,
-                detail_data=detail_data, compact_parsed=compact_parsed,
-            )
+            if self._drawer is not None:
+                self._drawer.show_session(
+                    session, meta=meta, summary=summary, last_replies=replies,
+                    detail_data=detail_data, compact_parsed=compact_parsed,
+                )
 
     # ── Actions ─────────────────────────────────────────────────────────────
 
@@ -787,14 +793,6 @@ class MainScreen(Screen):
         panel = self.query_one(SessionListPanel)
         panel.set_filter_all()
 
-    def action_focus_next_panel(self) -> None:
-        """Cycle focus to next panel."""
-        self.screen.focus_next()
-
-    def action_focus_previous_panel(self) -> None:
-        """Cycle focus to previous panel."""
-        self.screen.focus_previous()
-
     # ── Batch operations ───────────────────────────────────────────────
 
     def action_batch_archive(self) -> None:
@@ -890,8 +888,8 @@ class MainScreen(Screen):
         ]
         candidates.sort(key=lambda s: status_rank.get(s.status, 99))
 
-        # Limit to 20 per batch
-        candidates = candidates[:20]
+        # Limit to 40 per batch (increased from 20 for better coverage)
+        candidates = candidates[:40]
 
         if not candidates:
             return

@@ -55,6 +55,7 @@ class Swimlane(Static):
         self._current_session_id: Optional[str] = None
         self._compact_mode: bool = False  # True when embedded in narrow panel
         self._lane_y_map: list[tuple[int, int, Workflow]] = []  # (y_start, y_end, workflow)
+        self._needs_render: bool = False  # Deferred rendering flag
 
     def set_data(
         self,
@@ -67,7 +68,27 @@ class Swimlane(Static):
         self._statuses = statuses or {}
         self._current_session_id = current_session_id
         self._compact_mode = compact
-        self.update(self._render_content())
+        self._needs_render = True
+        # Try immediate render; if width is 0, on_mount/on_resize will handle it
+        self._try_render()
+
+    def _try_render(self) -> None:
+        """Render content if we have valid dimensions and data."""
+        if not self._needs_render or not self._cluster:
+            return
+        content = self._render_content()
+        self.update(content)
+        self._needs_render = False
+
+    def on_mount(self) -> None:
+        """Ensure content is rendered after mount."""
+        if self._needs_render:
+            self.call_after_refresh(self._try_render)
+
+    def _deferred_render(self) -> None:
+        """Re-render after layout has settled."""
+        self._needs_render = True
+        self._try_render()
 
     def _render_content(self) -> str:
         if not self._cluster or not self._cluster.workflows:

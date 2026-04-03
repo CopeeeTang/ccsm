@@ -15,7 +15,7 @@ Screen {
     color: #e7e5e4;
 }
 
-/* ── Three-Panel Layout ─────────────────────────────────────────────────── */
+/* ── Dual-Panel Layout (Worktree + Sessions) ───────────────────────────── */
 
 #main-container {
     layout: horizontal;
@@ -26,7 +26,7 @@ Screen {
 /* ── Left Panel: Worktree Tree ──────────────────────────────────────────── */
 
 #worktree-panel {
-    width: 15%;
+    width: 20%;
     min-width: 18;
     background: #292524;
     border-right: solid #44403c;
@@ -64,12 +64,11 @@ Screen {
     background: #fb923c 10%;
 }
 
-/* ── Middle Panel: Session List ─────────────────────────────────────────── */
+/* ── Right Panel: Session List (80% width) ────────────────────────────── */
 
 #session-panel {
-    width: 35%;
+    width: 80%;
     background: #292524;
-    border-right: solid #44403c;
     padding: 0;
 }
 
@@ -172,15 +171,21 @@ Screen {
     border-bottom: solid #44403c;
 }
 
-/* ── Right Panel: Session Detail ────────────────────────────────────────── */
+/* ── Drawer Overlay ────────────────────────────────────────────────────── */
 
-#detail-panel {
-    width: 50%;
-    background: #292524;
+SessionDetailDrawer {
+    align: right middle;
+}
+
+#drawer-panel {
+    width: 66%;
+    height: 100%;
+    background: #131211;
+    border-left: solid #fb923c;
     padding: 0;
 }
 
-#detail-panel .panel-title {
+.drawer-title {
     dock: top;
     height: 3;
     content-align: center middle;
@@ -191,8 +196,10 @@ Screen {
     padding: 0 1;
 }
 
+/* ── Detail Content (inside Drawer) ────────────────────────────────────── */
+
 #detail-content {
-    background: #292524;
+    background: #131211;
     padding: 1 2;
     scrollbar-size: 1 1;
     height: 1fr;
@@ -236,7 +243,6 @@ Screen {
 
 /* ── Markdown Rendering Quality ──────────────────────────────────────── */
 
-/* Code fences: distinct background for readability */
 .detail-reply-content MarkdownFence {
     background: #0d0b0a;
     margin: 1 0;
@@ -248,7 +254,6 @@ Screen {
     color: #d4d4d4;
 }
 
-/* Headings: subtle hierarchy */
 .detail-reply-content MarkdownH1 {
     color: #fb923c;
     text-style: bold;
@@ -270,12 +275,10 @@ Screen {
     margin: 1 0;
 }
 
-/* Paragraphs: proper spacing */
 .detail-reply-content MarkdownParagraph {
     margin: 0 0 1 0;
 }
 
-/* Lists: proper indentation */
 .detail-reply-content MarkdownBulletList {
     margin: 0 0 1 0;
     padding: 0 0;
@@ -286,7 +289,6 @@ Screen {
     padding: 0 0;
 }
 
-/* Block quotes: subtle left border */
 .detail-reply-content MarkdownBlockQuote {
     background: #292524;
     border-left: outer #fb923c 40%;
@@ -294,7 +296,6 @@ Screen {
     padding: 0 1;
 }
 
-/* Inline code: warm tone matching theme */
 .detail-reply-content MarkdownBlock > .code_inline {
     background: #fb923c 12%;
     color: #fbbf24;
@@ -317,18 +318,74 @@ Screen {
     height: auto;
 }
 
+/* ── Breakpoint Badge ─────────────────────────────────────────────────── */
+
+.det-breakpoint-badge {
+    background: #fb923c;
+    color: #1c1917;
+    text-style: bold;
+    padding: 0 1;
+    height: auto;
+    width: auto;
+    margin: 0 0 0 1;
+}
+
+/* ── Milestone Stepper ────────────────────────────────────────────────── */
+
+.det-milestones {
+    border-left: solid #44403c;
+    padding: 0 0 0 1;
+    margin: 0 0 0 2;
+    height: auto;
+}
+
+/* ── Summary Intent (block-quote style) ───────────────────────────────── */
+
+.det-summary-intent {
+    border-left: solid #fb923c 40%;
+    padding: 0 1;
+    margin: 0 2;
+    color: #a8a29e;
+    text-style: italic;
+    height: auto;
+}
+
+/* ── Chat Bubble (Last Exchange) ──────────────────────────────────────── */
+
+.det-chat-row {
+    height: auto;
+    margin: 0 0 1 0;
+}
+
+.det-chat-avatar {
+    width: 5;
+    min-width: 5;
+    height: 1;
+    background: #a855f7 30%;
+    color: #e7e5e4;
+    text-style: bold;
+    content-align: center middle;
+    padding: 0;
+}
+
+.det-chat-avatar-user {
+    background: #22c55e 30%;
+}
+
+.det-chat-msg {
+    border: solid #44403c;
+    padding: 1 2;
+    margin: 0 0 0 1;
+    background: #1c1917;
+    height: auto;
+    max-height: 20;
+    overflow-y: auto;
+}
+
 /* ── Focus Indicators ───────────────────────────────────────────────────── */
 
 #worktree-panel:focus-within {
     border-right: solid #e7e5e4;
-}
-
-#session-panel:focus-within {
-    border-right: solid #e7e5e4;
-}
-
-#detail-panel:focus-within {
-    border-left: solid #e7e5e4;
 }
 
 /* ── Footer ──────────────────────────────────────────────────────────────── */
@@ -406,7 +463,7 @@ Screen {
     height: auto;
 }
 
-/* ── Swimlane in Middle Panel ───────────────────────────────────────────── */
+/* ── Swimlane in Session Panel ──────────────────────────────────────────── */
 
 #session-list-container Swimlane {
     padding: 1 1;
@@ -416,7 +473,7 @@ Screen {
 /* ── Collapsible Sections (WHAT WAS DONE, LAST EXCHANGE) ───────────────── */
 
 #detail-content Collapsible {
-    background: #292524;
+    background: #131211;
     border: none;
     padding: 0;
     margin-bottom: 1;

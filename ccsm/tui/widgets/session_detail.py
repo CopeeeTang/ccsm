@@ -101,6 +101,22 @@ def _strip_emoji_prefix(label: str) -> str:
     return stripped.strip() or label
 
 
+def _clean_intent_text(text: str) -> str:
+    """Clean numbered/listed text into concise intent form.
+
+    Transforms patterns like:
+      "1.添加GPT-5.4支持 2.检查soul.md"  → "添加GPT-5.4支持；检查soul.md"
+      "1) first task 2) second"           → "first task；second"
+    """
+    text = text.replace("\n", " ").strip()
+    # Match number+separator only at string-start or after whitespace
+    parts = _re.split(r'(?:^|(?<=\s))\d+[\.\)、]\s*', text)
+    parts = [p.strip() for p in parts if p.strip()]
+    if len(parts) > 1:
+        return "；".join(parts)
+    return text
+
+
 class SessionDetail(VerticalScroll):
     """Detail view for a selected session — recovery-first layout."""
 
@@ -164,27 +180,31 @@ class SessionDetail(VerticalScroll):
             self.mount(Static("Select a session to view details", classes="empty-state"))
             return
 
-        # ── Section 1: Session metadata (compact auxiliary) ────────
-        self._mount_section("📋 SESSION", self._build_description(s))
+        # ── Section 1: Session Identity (det-summary style) ───────
+        self._mount_session_section(s)
 
-        # ── Section 2: Milestones (1st priority) ───────────────────
+        # ── Section 2: Milestones (Stepper with guide line) ───────
         self._mount_milestones_section()
 
         # ── Section 3: Context Summary (2nd priority) ──────────────
         self._mount_context_summary_section()
 
-        # ── Section 4: Where You Left Off (3rd priority) ───────────
+        # ── Section 4: Where You Left Off (Breakpoint badge) ──────
         self._mount_where_left_off_section()
 
         # ── Section 5: What Was Done (collapsible) ─────────────────
         self._mount_what_was_done_section()
 
-        # ── Section 6: Last Exchange (collapsible) ─────────────────
+        # ── Section 6: Last Exchange (Chat bubble) ─────────────────
         self._mount_last_exchange_section()
 
-    # ── SESSION description (compact with inline status tag) ──
+    # ── SESSION IDENTITY (det-summary: large title + block-quote intent) ──
 
-    def _build_description(self, s: SessionInfo) -> str:
+    def _mount_session_section(self, s: SessionInfo) -> None:
+        """Mount session identity with large title and block-quote intent."""
+        section = Vertical(classes="detail-section")
+        self.mount(section)
+
         title = s.display_title
         if self._meta and self._meta.name:
             title = self._meta.name
@@ -193,47 +213,50 @@ class SessionDetail(VerticalScroll):
         # Status tag inline
         status_tag, _ = _STATUS_TAGS.get(s.status, (s.status.value, "#78716c"))
 
-        K = "#a8a29e"  # Key color (muted)
-        V = "#e7e5e4"  # Value color
-
-        # Duration + message count combined
+        K = "#a8a29e"
         dur = _format_duration(s.duration_seconds)
         msg_info = f"{dur} · {s.message_count} msg"
 
-        # Model info
         model_str = s.model_name or "—"
-        # Shorten model name: "claude-opus-4-6" → "opus-4-6"
         if model_str.startswith("claude-"):
             model_str = model_str[7:]
 
-        # Token stats
         token_str = ""
         if s.total_input_tokens > 0 or s.total_output_tokens > 0:
             token_str = f" · {_format_tokens(s.total_input_tokens)}↑ {_format_tokens(s.total_output_tokens)}↓"
 
-        # Running indicator
         running = "  [bold #22c55e]⚡ Running[/]" if s.is_running else ""
 
-        lines = [
-            f"  [{V} bold]{title}[/]  {status_tag}{running}",
-            f"  [{K}]{msg_info} · {rich_escape(model_str)}{token_str}[/]",
-        ]
+        # Large title (Gemini det-summary style)
+        section.mount(Static(
+            f"  [#fb923c bold]{title}[/]  {status_tag}{running}",
+            classes="detail-section-title",
+        ))
 
-        # Intent (AI or first user content)
+        # Compact metadata line
+        section.mount(Static(
+            f"  [{K}]{msg_info} · {rich_escape(model_str)}{token_str}[/]",
+            classes="detail-section-body",
+        ))
+
+        # Intent as block-quote (det-summary-intent style)
         ai_intent = self._meta.ai_intent if self._meta else None
         intent_text = ai_intent or (s.first_user_content or "")
         if intent_text:
             content = intent_text.replace("\n", " ").strip()
-            if len(content) > 80:
-                content = content[:79] + "…"
-            lines.append(f"  [{K}]Intent[/] [#a8a29e italic]\"{rich_escape(content)}\"[/]")
-
-        return "\n".join(lines)
+            if not ai_intent:
+                content = _clean_intent_text(content)
+            if len(content) > 120:
+                content = content[:119] + "…"
+            section.mount(Static(
+                f"  💡 [{K} italic]\"{rich_escape(content)}\"[/]",
+                classes="det-summary-intent",
+            ))
 
     # ── MILESTONES (1st priority) ─────────────────────────────
 
     def _mount_milestones_section(self) -> None:
-        """Mount milestone timeline — compact summary first, rule-based fallback."""
+        """Mount milestone timeline — Stepper style with left guide line."""
         section = Vertical(classes="detail-section")
         self.mount(section)
         section.mount(Static(
@@ -263,7 +286,8 @@ class SessionDetail(VerticalScroll):
             ))
             return
 
-        # Render milestones
+        # Render milestones inside Stepper container (det-milestones style)
+        stepper = Vertical(classes="det-milestones")
         lines: list[str] = []
         for ms in milestones:
             icon, color = _MS_ICONS.get(ms.status, ("[#78716c]○[/]", "#78716c"))
@@ -299,7 +323,8 @@ class SessionDetail(VerticalScroll):
                     f"    {sub_icon} [{sub_color}]{sub_label}[/]{here_marker}"
                 )
 
-        section.mount(Static("\n".join(lines), classes="detail-section-body"))
+        section.mount(stepper)
+        stepper.mount(Static("\n".join(lines), classes="detail-section-body"))
 
     # ── CONTEXT SUMMARY (2nd priority) ────────────────────────
 
@@ -363,23 +388,42 @@ class SessionDetail(VerticalScroll):
                 lines.append("")
                 for insight in self._summary.key_insights[:3]:
                     lines.append(f"    [#60a5fa]•[/] {rich_escape(insight)}")
+
         else:
-            lines.append(f"  [{K} italic]No context summary. Press [/][bold #fb923c]s[/][{K} italic] to generate.[/]")
+            # L3 fallback: use AI intent or first user content as minimal context
+            s = self._session
+            ai_intent = self._meta.ai_intent if self._meta else None
+            fallback_text = ai_intent or (s.first_user_content if s else None)
+            if fallback_text:
+                content = fallback_text.replace("\n", " ").strip()
+                if not ai_intent:
+                    content = _clean_intent_text(content)
+                if len(content) > 200:
+                    content = content[:197] + "…"
+                source = "AI" if ai_intent else "首次请求"
+                lines.append(f"  [{K}]{source}[/] [{V}]{rich_escape(content)}[/]")
+                lines.append("")
+                lines.append(f"  [{K} italic]Press [/][bold #fb923c]s[/][{K} italic] for detailed AI summary.[/]")
+            else:
+                lines.append(f"  [{K} italic]No context summary. Press [/][bold #fb923c]s[/][{K} italic] to generate.[/]")
 
         section.mount(Static("\n".join(lines), classes="detail-section-body"))
 
-    # ── WHERE YOU LEFT OFF (3rd priority) ─────────────────────
+    # ── WHERE YOU LEFT OFF (Breakpoint badge style) ────────────
 
     def _mount_where_left_off_section(self) -> None:
-        """Mount the breakpoint / last-prompt section."""
+        """Mount the breakpoint / last-prompt section with badge."""
         section = Vertical(classes="detail-section detail-breakpoint")
         self.mount(section)
+
+        # Breakpoint badge (Gemini det-breakpoint-badge style)
         section.mount(Static(
-            "[#fb923c]─── 📍 WHERE YOU LEFT OFF ───[/]",
-            classes="detail-section-title",
+            " 📍 WHERE YOU LEFT OFF ",
+            classes="det-breakpoint-badge",
         ))
 
         s = self._session
+        dd = self._detail_data
         lines: list[str] = []
 
         # Last prompt (highest value — user's actual last input)
@@ -390,14 +434,27 @@ class SessionDetail(VerticalScroll):
             prompt_text = last_prompt
             if len(prompt_text) > 200:
                 prompt_text = prompt_text[:197] + "…"
-            lines.append(f"  [#fb923c bold]Last request[/]")
+            lines.append(f"  [#fb923c bold]You asked[/]")
             lines.append(f"  {rich_escape(prompt_text)}")
         elif last_user:
             user_text = last_user
             if len(user_text) > 200:
                 user_text = user_text[:197] + "…"
-            lines.append(f"  [#fb923c bold]Last message[/]")
+            lines.append(f"  [#fb923c bold]You said[/]")
             lines.append(f"  {rich_escape(user_text)}")
+
+        # Last AI response (show what AI was doing/said last)
+        last_ai = dd.last_assistant_msg if dd else None
+        if not last_ai and self._last_replies:
+            last_ai = self._last_replies[-1]
+
+        if last_ai:
+            ai_text = last_ai.replace("\n", " ").strip()
+            if len(ai_text) > 200:
+                ai_text = ai_text[:197] + "…"
+            lines.append("")
+            lines.append(f"  [#60a5fa bold]AI responded[/]")
+            lines.append(f"  [#a8a29e]{rich_escape(ai_text)}[/]")
 
         # Breakpoint from summary (if available)
         bp = self._summary.breakpoint if self._summary else None
@@ -414,16 +471,7 @@ class SessionDetail(VerticalScroll):
             lines.append(f"  [#60a5fa]💡 Insight[/] {rich_escape(last_insight)}")
 
         if not lines:
-            if self._last_replies:
-                # Ultra-fallback: derive from last reply
-                last = self._last_replies[-1]
-                snippet = last.replace("\n", " ").strip()
-                if len(snippet) > 150:
-                    snippet = snippet[:147] + "…"
-                lines.append(f"  [#fb923c bold]Last response[/]")
-                lines.append(f"  [#a8a29e]{rich_escape(snippet)}[/]")
-            else:
-                lines.append("  [#78716c italic]No breakpoint data available[/]")
+            lines.append("  [#78716c italic]No breakpoint data available[/]")
 
         section.mount(Static("\n".join(lines), classes="detail-breakpoint-body"))
 
@@ -475,10 +523,12 @@ class SessionDetail(VerticalScroll):
         self.mount(collapsible)
         collapsible.mount(Static(body, classes="detail-section-body"))
 
-    # ── LAST EXCHANGE (collapsible) ───────────────────────────
+    # ── LAST EXCHANGE (Chat bubble style) ──────────────────────
 
     def _mount_last_exchange_section(self) -> None:
-        """Mount last user+assistant message pair — collapsible."""
+        """Mount last user+assistant message pair — chat bubble style."""
+        from textual.containers import Horizontal
+
         dd = self._detail_data
         has_exchange = dd and (dd.last_user_msg or dd.last_assistant_msg)
         has_reply = bool(self._last_replies)
@@ -486,33 +536,44 @@ class SessionDetail(VerticalScroll):
         if not has_exchange and not has_reply:
             return
 
-        lines: list[str] = []
+        collapsible = Collapsible(title="💬 LAST EXCHANGE", collapsed=True)
+        self.mount(collapsible)
+
         V = "#e7e5e4"
         K = "#a8a29e"
 
+        # User message bubble
         if dd and dd.last_user_msg:
             user_text = dd.last_user_msg[:300]
             if len(dd.last_user_msg) > 300:
                 user_text += "…"
-            lines.append(f"  [#22c55e bold]\\[YOU][/] [{V}]{rich_escape(user_text)}[/]")
-            lines.append("")
+            row = Horizontal(classes="det-chat-row")
+            collapsible.mount(row)
+            row.mount(Static(" YOU ", classes="det-chat-avatar det-chat-avatar-user"))
+            row.mount(Static(
+                f"[{V}]{rich_escape(user_text)}[/]",
+                classes="det-chat-msg",
+            ))
 
+        # AI message bubble
+        ai_text = None
         if dd and dd.last_assistant_msg:
             ai_text = dd.last_assistant_msg[:300]
             if len(dd.last_assistant_msg) > 300:
                 ai_text += "…"
-            lines.append(f"  [#60a5fa bold]\\[AI][/]  [{K}]{rich_escape(ai_text)}[/]")
         elif self._last_replies:
-            reply = self._last_replies[-1][:300]
+            ai_text = self._last_replies[-1][:300]
             if len(self._last_replies[-1]) > 300:
-                reply += "…"
-            lines.append(f"  [#60a5fa bold]\\[AI][/]  [{K}]{rich_escape(reply)}[/]")
+                ai_text += "…"
 
-        body = "\n".join(lines)
-
-        collapsible = Collapsible(title="💬 LAST EXCHANGE", collapsed=True)
-        self.mount(collapsible)
-        collapsible.mount(Static(body, classes="detail-section-body"))
+        if ai_text:
+            row = Horizontal(classes="det-chat-row")
+            collapsible.mount(row)
+            row.mount(Static("  AI ", classes="det-chat-avatar"))
+            row.mount(Static(
+                f"[{K}]{rich_escape(ai_text)}[/]",
+                classes="det-chat-msg",
+            ))
 
     # ── Workflow overview (no session selected) ──────────────────
 
