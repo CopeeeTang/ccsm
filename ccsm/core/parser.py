@@ -28,7 +28,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from ccsm.models.session import JSONLMessage, SessionInfo
+from ccsm.models.session import JSONLMessage, SessionDetailData, SessionInfo
 
 logger = logging.getLogger(__name__)
 
@@ -174,6 +174,9 @@ def _read_tail_lines(path: Path, n: int = 50) -> list[str]:
                 lines = raw.decode("utf-8", errors="replace").splitlines(keepends=True)
                 if len(lines) > n:
                     break
+                if chunk_size >= file_size:
+                    # Already reading entire file — can't get more lines
+                    break
                 chunk_size = min(chunk_size * 2, file_size)
 
         return lines[-n:]
@@ -217,6 +220,14 @@ def parse_session_info(jsonl_path: Path) -> SessionInfo:
     ai_title: Optional[str] = None
     forked_from: Optional[str] = None
 
+    # New: previously-skipped high-value data
+    last_prompt: Optional[str] = None
+    compact_summaries: list[str] = []
+    model_name: Optional[str] = None
+    total_input_tokens = 0
+    total_output_tokens = 0
+    last_user_message: Optional[str] = None
+
     lines = _read_lines(jsonl_path)
 
     for line in lines:
@@ -253,6 +264,13 @@ def parse_session_info(jsonl_path: Path) -> SessionInfo:
                 ai_title = data.get("title") or data.get("aiTitle")
             continue
 
+        # ── Extract last-prompt (user's last input before session end) ──
+        if msg_type == "last-prompt":
+            lp = data.get("lastPrompt")
+            if lp and isinstance(lp, str) and len(lp.strip()) > 2:
+                last_prompt = lp.strip()
+            continue
+
         # ── Extract forkedFrom from any entry ─────────────────────────────
         if forked_from is None:
             fk = data.get("forkedFrom")
@@ -265,8 +283,16 @@ def parse_session_info(jsonl_path: Path) -> SessionInfo:
         if msg_type not in _MESSAGE_TYPES:
             continue
 
-        # Skip compact summary messages and meta messages (not real user input)
-        if data.get("isCompactSummary") or data.get("isMeta"):
+        # ── Extract isCompactSummary content (previously skipped!) ──────
+        if data.get("isCompactSummary"):
+            msg_obj = data.get("message") or {}
+            cs_content = _extract_text(msg_obj.get("content", ""))
+            if cs_content and len(cs_content) > 50:
+                compact_summaries.append(cs_content)
+            continue
+
+        # Skip meta messages (not real user input)
+        if data.get("isMeta"):
             continue
 
         # Count messages
@@ -285,10 +311,28 @@ def parse_session_info(jsonl_path: Path) -> SessionInfo:
                 if cleaned:
                     first_user_content = cleaned[:200]
 
+            # Track last user message (for WHERE YOU LEFT OFF)
+            stripped_content = msg_content.strip()
+            if stripped_content and not stripped_content.startswith("/"):
+                cleaned_last = _sanitize_content(stripped_content)
+                if cleaned_last and len(cleaned_last) > 5:
+                    last_user_message = cleaned_last[:500]
+
             # Track if all user messages are slash commands
             stripped = msg_content.strip()
             if stripped and not stripped.startswith("/"):
                 all_slash_commands = False
+
+        elif msg_type == "assistant":
+            # Extract model name and token usage
+            msg_obj = data.get("message") or {}
+            m = msg_obj.get("model")
+            if m:
+                model_name = m
+            usage = msg_obj.get("usage")
+            if isinstance(usage, dict):
+                total_input_tokens += usage.get("input_tokens", 0)
+                total_output_tokens += usage.get("output_tokens", 0)
 
         # Extract sessionId from any message line (first occurrence wins)
         sid = data.get("sessionId")
@@ -334,6 +378,12 @@ def parse_session_info(jsonl_path: Path) -> SessionInfo:
         custom_title=custom_title,
         ai_title_from_cc=ai_title,
         forked_from_session=forked_from,
+        last_prompt=last_prompt,
+        compact_summaries=compact_summaries,
+        model_name=model_name,
+        total_input_tokens=total_input_tokens,
+        total_output_tokens=total_output_tokens,
+        last_user_message=last_user_message,
     )
 
 
@@ -356,6 +406,10 @@ def parse_session_messages(jsonl_path: Path) -> list[JSONLMessage]:
         try:
             data = json.loads(line)
         except (json.JSONDecodeError, ValueError):
+            continue
+
+        # Skip compact summaries and meta entries — not real conversation
+        if data.get("isCompactSummary") or data.get("isMeta"):
             continue
 
         msg = _parse_message_line(data)
@@ -452,3 +506,119 @@ def parse_session_timestamps(jsonl_path: Path) -> SessionTimestamps:
             result.last_message_at = ts
 
     return result
+
+
+# ─── Deep detail parsing (on-demand for Detail panel) ───────────────────────
+
+
+def _summarize_tool_input(tool_name: str, tool_input: dict) -> Optional[str]:
+    """Extract a short summary from a tool_use input dict.
+
+    Returns file path for file operations, command for Bash, etc.
+    """
+    if not isinstance(tool_input, dict):
+        return None
+
+    if tool_name in ("Edit", "Write", "MultiEdit", "NotebookEdit"):
+        return tool_input.get("file_path") or tool_input.get("notebook_path")
+    if tool_name == "Bash":
+        cmd = tool_input.get("command", "")
+        # Truncate long commands
+        if len(cmd) > 100:
+            cmd = cmd[:97] + "..."
+        return cmd
+    if tool_name == "Read":
+        return tool_input.get("file_path")
+    if tool_name in ("Grep", "Glob"):
+        pattern = tool_input.get("pattern", "")
+        path = tool_input.get("path", "")
+        return f"{pattern} in {path}" if path else pattern
+    if tool_name == "Agent":
+        return tool_input.get("description") or tool_input.get("prompt", "")[:80]
+    return None
+
+
+def parse_session_detail(jsonl_path: Path) -> SessionDetailData:
+    """Deep parse a JSONL file for the Detail panel.
+
+    Extracts tool_use operations (edited files, bash commands, read files)
+    and the last user+assistant exchange. Only called when a session is
+    selected in the TUI — heavier than parse_session_info().
+    """
+    files_edited: set[str] = set()
+    commands_run: list[str] = []
+    files_read: set[str] = set()
+    searches: set[str] = set()
+    agents_spawned: list[str] = []
+    last_user_msg: Optional[str] = None
+    last_assistant_msg: Optional[str] = None
+
+    session_id = jsonl_path.stem
+    lines = _read_lines(jsonl_path)
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            data = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+
+        msg_type = data.get("type")
+        if msg_type not in _MESSAGE_TYPES:
+            continue
+        if data.get("isCompactSummary") or data.get("isMeta"):
+            continue
+
+        msg_obj = data.get("message") or {}
+
+        if msg_type == "user":
+            content = _extract_text(msg_obj.get("content", ""))
+            cleaned = _sanitize_content(content.strip()) if content.strip() else None
+            if cleaned and len(cleaned) > 5:
+                last_user_msg = cleaned[:1000]
+
+        elif msg_type == "assistant":
+            # Extract text content
+            text_content = _extract_text(msg_obj.get("content", ""))
+            if text_content and len(text_content.strip()) > 10:
+                last_assistant_msg = text_content.strip()[:1000]
+
+            # Extract tool_use operations
+            raw_content = msg_obj.get("content", [])
+            if isinstance(raw_content, list):
+                for block in raw_content:
+                    if not isinstance(block, dict):
+                        continue
+                    if block.get("type") != "tool_use":
+                        continue
+                    tool_name = block.get("name", "")
+                    tool_input = block.get("input", {})
+                    summary = _summarize_tool_input(tool_name, tool_input)
+                    if not summary:
+                        continue
+
+                    if tool_name in ("Edit", "Write", "MultiEdit", "NotebookEdit"):
+                        files_edited.add(summary)
+                    elif tool_name == "Bash":
+                        if len(commands_run) < 20:  # Cap to avoid spam
+                            commands_run.append(summary)
+                    elif tool_name == "Read":
+                        files_read.add(summary)
+                    elif tool_name in ("Grep", "Glob"):
+                        searches.add(summary)
+                    elif tool_name == "Agent":
+                        if len(agents_spawned) < 10:
+                            agents_spawned.append(summary)
+
+    return SessionDetailData(
+        session_id=session_id,
+        files_edited=sorted(files_edited),
+        commands_run=commands_run[-10:],  # Keep last 10 commands
+        files_read=sorted(files_read),
+        searches=sorted(searches),
+        agents_spawned=agents_spawned,
+        last_user_msg=last_user_msg,
+        last_assistant_msg=last_assistant_msg,
+    )

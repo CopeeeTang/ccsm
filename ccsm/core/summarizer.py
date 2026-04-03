@@ -59,6 +59,7 @@ Rules:
 - Each milestone gets a short label (≤20 chars) and one-line detail (≤50 chars)
 - The last active milestone should have sub_items listing specific topics discussed
 - The breakpoint identifies exactly where the user stopped
+- 默认使用中文输出所有文本内容，专有名词（如 API、Redis、Kubernetes）保留英文
 
 Output ONLY valid JSON matching this schema — no markdown, no explanation:
 {
@@ -295,10 +296,11 @@ def summarize_session(
     Returns:
         SessionSummary with milestones and breakpoint populated
     """
-    # Check cache first
+    # Check cache first — only reuse if cached mode matches requested mode
+    # (prevents extract cache from blocking LLM upgrade)
     if not force:
         cached = load_summary(session_id)
-        if cached and cached.milestones:
+        if cached and cached.milestones and cached.mode == mode:
             return cached
 
     # Parse all messages
@@ -397,13 +399,13 @@ def _extract_json_object(text: str) -> Optional[dict]:
 
 _TITLE_PROMPT_TEMPLATE = """\
 Based on this conversation excerpt, generate:
-1. A short title (≤8 Chinese characters or ≤20 English characters) — the core task action
+1. A short title (≤8 Chinese characters) — the core task action
 2. A one-line intent summary (≤20 Chinese characters) — the user's original request
 
 Rules:
-- Title should be like "重构数据库" or "Fix Login Bug" — action-oriented, ultra-concise
+- 默认使用中文，专有名词（API、Redis、Claude Code 等）保留英文
+- Title should be like "重构数据库", "修复登录Bug", "优化API性能" — action-oriented, ultra-concise
 - Intent should be like "优化搜索性能并修复排序问题" — describe what user wants
-- Use the same language as the conversation
 - Output ONLY valid JSON: {{"title": "...", "intent": "..."}}
 
 Conversation:
@@ -537,3 +539,118 @@ def generate_ai_title_sync(
     except RuntimeError:
         # No running loop — safe to call asyncio.run() directly
         return asyncio.run(generate_ai_title(session_id, messages, force))
+
+
+# ─── Compact Summary AI Refinement ────────────────────────────────────────────
+
+
+_COMPACT_REFINE_PROMPT = """\
+你是一个会话分析师。下面是 Claude Code 在 compact 操作时自动生成的上下文摘要。
+请从中提取结构化的工作进度信息。
+
+提取规则：
+1. 工作阶段进度（3-6个关键阶段）——每个标记 done/wip/pending
+2. 被否决的方案和原因（帮用户避免 resume 后重复探索）
+3. 用户明确说要做但还没做的事（只提取用户确认的，不包括 AI 建议的）
+4. 当前阻塞点（如果有的话）
+5. 默认使用中文，专有名词保留英文
+
+输出 ONLY valid JSON:
+{
+  "phases": [
+    {"label": "阶段名（≤10字）", "status": "done|wip|pending", "detail": "一句话说明"}
+  ],
+  "rejected": [
+    {"approach": "被否决的方案", "reason": "原因"}
+  ],
+  "pending_user_tasks": ["用户确认要做的具体事项"],
+  "blocker": {"description": "阻塞描述", "needs": "需要什么才能继续"} | null
+}"""
+
+
+_COMPACT_REFINE_USER = """\
+以下是 Claude Code compact 摘要的内容：
+
+{compact_text}
+
+请提取结构化进度信息。输出 ONLY JSON。"""
+
+
+async def refine_compact_summary(
+    compact_text: str,
+    base_url: str = DEFAULT_BASE_URL,
+    api_key: str = DEFAULT_API_KEY,
+    model: str = DEFAULT_MODEL,
+) -> Optional[dict]:
+    """Use AI to refine a compact summary into structured progress data.
+
+    Takes the raw compact summary text (typically 5-10K chars) and produces
+    structured phases, rejected approaches, pending tasks, and blockers.
+
+    Returns parsed JSON dict on success, None on failure.
+    Cost: very low — input is a pre-existing summary, not raw conversation.
+    """
+    if not compact_text or len(compact_text) < 50:
+        return None
+
+    # Truncate very long summaries to control token cost
+    if len(compact_text) > 8000:
+        compact_text = compact_text[:8000] + "\n... (truncated)"
+
+    safe_text = compact_text.replace("{", "{{").replace("}", "}}")
+    user_prompt = _COMPACT_REFINE_USER.format(compact_text=safe_text)
+
+    try:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.post(
+                f"{base_url}/v1/chat/completions",
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": _COMPACT_REFINE_PROMPT},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    "max_tokens": 1024,
+                    "temperature": 0.2,
+                },
+            )
+            resp.raise_for_status()
+            raw_text = resp.json()["choices"][0]["message"]["content"].strip()
+
+            # Strip markdown fences
+            if raw_text.startswith("```"):
+                raw_text = raw_text.split("\n", 1)[1] if "\n" in raw_text else raw_text[3:]
+            if raw_text.endswith("```"):
+                raw_text = raw_text[:-3].strip()
+
+            return json.loads(raw_text)
+
+    except Exception as e:
+        logger.warning("Compact summary refinement failed: %s", e)
+        return None
+
+
+def refine_compact_summary_sync(
+    compact_text: str,
+    base_url: str = DEFAULT_BASE_URL,
+    api_key: str = DEFAULT_API_KEY,
+    model: str = DEFAULT_MODEL,
+) -> Optional[dict]:
+    """Synchronous wrapper for refine_compact_summary."""
+    import asyncio
+    import concurrent.futures
+
+    try:
+        asyncio.get_running_loop()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(
+                asyncio.run,
+                refine_compact_summary(compact_text, base_url, api_key, model),
+            )
+            return future.result(timeout=25)
+    except RuntimeError:
+        return asyncio.run(
+            refine_compact_summary(compact_text, base_url, api_key, model)
+        )

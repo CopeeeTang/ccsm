@@ -125,6 +125,14 @@ class SessionInfo:
     # Runtime state (from ~/.claude/sessions/)
     is_running: bool = False  # Currently has an active process
 
+    # New: high-value data previously skipped in JSONL parsing
+    last_prompt: Optional[str] = None           # From last-prompt type entry
+    compact_summaries: list[str] = field(default_factory=list)  # From isCompactSummary messages
+    model_name: Optional[str] = None            # From message.model (last assistant msg)
+    total_input_tokens: int = 0                 # Cumulative from message.usage
+    total_output_tokens: int = 0                # Cumulative from message.usage
+    last_user_message: Optional[str] = None     # Last non-meta user message content
+
     # Inferred
     status: Status = Status.DONE
     priority: Priority = Priority.PARK
@@ -140,16 +148,26 @@ class SessionInfo:
     def display_title(self) -> str:
         """Best available title for display.
 
-        Priority: display_name (from history.jsonl) > custom_title (user-set in JSONL)
-        > ai_title_from_cc (AI-generated title in JSONL) > slug > session_id prefix.
+        Priority: display_name (if meaningful) > custom_title > ai_title_from_cc
+        > slug (if meaningful) > session_id prefix.
+
+        Skips meaningless values like /resume, /clear, /plugin etc.
         """
-        return (
-            self.display_name
-            or self.custom_title
-            or self.ai_title_from_cc
-            or self.slug
-            or self.session_id[:8]
-        )
+        # display_name from history.jsonl — skip if it's a slash command
+        if self.display_name and not self.display_name.strip().startswith("/"):
+            return self.display_name
+        # custom_title set by user in JSONL
+        if self.custom_title:
+            return self.custom_title
+        # AI-generated title from Claude Code JSONL
+        if self.ai_title_from_cc:
+            return self.ai_title_from_cc
+        # Slug — skip if it looks like a generic 3-word slug
+        if self.slug:
+            parts = self.slug.split("-")
+            if not (len(parts) == 3 and all(p.isalpha() for p in parts)):
+                return self.slug
+        return self.session_id[:8]
 
 
 @dataclass
@@ -390,3 +408,49 @@ class WorkflowCluster:
     orphans: list[str] = field(default_factory=list)  # Session IDs not in any workflow
     generated_at: Optional[datetime] = None
     model: Optional[str] = None  # AI model used for naming/clustering
+
+
+# ─── Compact Summary & Detail Models ─────────────────────────────────────────
+
+
+@dataclass
+class CompactSummaryParsed:
+    """Structured parse of a Claude Code compact summary.
+
+    Claude Code's compact operation generates a structured summary with
+    consistent sections (97.9% coverage across 95 samples):
+      1. Primary Request and Intent
+      2. Key Technical Concepts
+      3. Files and Code Sections
+      4. Current Work
+      5. Pending Tasks
+      6. Problem Solving
+      7. Errors and Fixes (~97%)
+    """
+
+    primary_request: Optional[str] = None
+    key_concepts: Optional[str] = None
+    files_and_code: Optional[str] = None
+    current_work: Optional[str] = None
+    pending_tasks: Optional[str] = None
+    problem_solving: Optional[str] = None
+    errors_and_fixes: Optional[str] = None
+    raw_text: str = ""  # Full original text as fallback
+
+
+@dataclass
+class SessionDetailData:
+    """Deep-parsed data for the Detail panel (loaded on demand).
+
+    Heavier than SessionInfo — only parsed when user selects a session.
+    Contains tool_use operations and last exchange context.
+    """
+
+    session_id: str
+    files_edited: list[str] = field(default_factory=list)    # From tool_use(Edit/Write/MultiEdit)
+    commands_run: list[str] = field(default_factory=list)     # From tool_use(Bash)
+    files_read: list[str] = field(default_factory=list)       # From tool_use(Read/Glob/Grep)
+    searches: list[str] = field(default_factory=list)         # From tool_use(Grep/Glob) patterns
+    agents_spawned: list[str] = field(default_factory=list)   # From tool_use(Agent) descriptions
+    last_user_msg: Optional[str] = None     # Full last user message
+    last_assistant_msg: Optional[str] = None  # Full last assistant message

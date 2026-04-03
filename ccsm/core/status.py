@@ -218,6 +218,39 @@ def _is_idea(session: SessionInfo) -> bool:
     return False
 
 
+def _infer_from_compact(session: SessionInfo) -> Optional[Status]:
+    """Infer status from compact summary content (zero API cost).
+
+    Compact summaries have structured sections (97.9% coverage):
+    - "Pending Tasks" → likely ACTIVE or IDEA depending on recency
+    - "Current Work" → likely ACTIVE
+    - No pending tasks + no current work → likely DONE
+
+    Returns a Status or None if unable to determine.
+    """
+    if not session.compact_summaries:
+        return None
+
+    last_cs = session.compact_summaries[-1].lower()
+    hours_ago = _hours_since(session.last_timestamp)
+
+    # Check for pending/current work indicators
+    has_pending = any(
+        marker in last_cs
+        for marker in ("pending tasks", "optional next step", "待完成", "待处理", "todo")
+    )
+    has_current_work = "current work" in last_cs
+
+    if has_current_work or has_pending:
+        # Has unfinished work — ACTIVE if recent, IDEA if stale
+        if hours_ago is not None and hours_ago <= DONE_THRESHOLD_HOURS:
+            return Status.ACTIVE
+        return Status.IDEA
+
+    # No pending work — likely completed
+    return Status.DONE
+
+
 def infer_status(session: SessionInfo, running_info: Optional[dict] = None) -> Status:
     """Infer session status from SessionInfo metadata fields.
 
@@ -237,7 +270,7 @@ def infer_status(session: SessionInfo, running_info: Optional[dict] = None) -> S
     - project_dir (observer directory detection)
     - slug, display_name (keyword hints)
     """
-    # Priority order: NOISE → BACKGROUND → ACTIVE → IDEA → DONE
+    # Priority order: NOISE → BACKGROUND → ACTIVE → compact → IDEA → DONE
     if _is_noise(session):
         return Status.NOISE
 
@@ -246,6 +279,11 @@ def infer_status(session: SessionInfo, running_info: Optional[dict] = None) -> S
 
     if _is_active(session):
         return Status.ACTIVE
+
+    # L1: compact summary can upgrade precision for ACTIVE/IDEA/DONE
+    cs_status = _infer_from_compact(session)
+    if cs_status is not None:
+        return cs_status
 
     if _is_idea(session):
         return Status.IDEA

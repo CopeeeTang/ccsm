@@ -10,6 +10,7 @@ This is the primary screen of the CCSM TUI. It:
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -42,6 +43,24 @@ from ccsm.tui.widgets.worktree_tree import WorktreeTree
 logger = logging.getLogger(__name__)
 
 
+
+def _is_meaningless_title(title: str) -> bool:
+    """Check if a session title is meaningless and should be replaced by AI."""
+    if not title:
+        return True
+    t = title.strip()
+    # Slash commands
+    if t.startswith("/"):
+        return True
+    # Too short
+    if len(t) < 3:
+        return True
+    # UUID-like slugs (word-word-word)
+    parts = t.split("-")
+    if len(parts) == 3 and all(p.isalpha() for p in parts):
+        return True
+    return False
+
 class MainScreen(Screen):
     """Primary three-panel screen."""
 
@@ -57,8 +76,9 @@ class MainScreen(Screen):
         ("2", "switch_tab_2", "Back"),
         ("3", "switch_tab_3", "Idea"),
         ("4", "switch_tab_4", "Done"),
+        ("0", "switch_tab_all", "All"),
         ("D", "batch_archive", "Archive"),
-        ("g", "toggle_graph", "Graph"),
+        ("g", "toggle_graph", "View"),
     ]
 
     def __init__(self, **kwargs) -> None:
@@ -69,7 +89,7 @@ class MainScreen(Screen):
         self._selected_session: Optional[SessionInfo] = None
         self._all_meta: dict[str, SessionMeta] = {}
         self._last_thoughts: dict[str, str] = {}
-        self._running: dict[str, bool] = {}
+        self._running: dict[str, dict] = {}
         self._display_names: dict[str, str] = {}
         self._panel_widgets: list = []  # for tab cycling
         self._auto_summary_timer = None  # Timer for silent auto-summary
@@ -77,7 +97,6 @@ class MainScreen(Screen):
         self._lineage_signals: dict[str, LineageSignals] = {}  # Pain point #1,5,7,8
         self._lineage_types: dict[str, str] = {}  # session_id → "fork"/"compact"/"duplicate"
         self._session_index = SessionIndex()  # Pain point #3,4
-        self._graph_visible: bool = False  # Pain point #8: graph toggle
         self._workflow_cluster: Optional[WorkflowCluster] = None  # v2: workflow data
         self._ai_cluster_timer = None  # Timer for background AI clustering
 
@@ -88,7 +107,7 @@ class MainScreen(Screen):
             with Vertical(id="worktree-panel"):
                 yield Static(" WORKTREES", classes="panel-title")
                 yield WorktreeTree()
-            # Middle panel: Session list
+            # Middle panel: Session list (dual mode: list / swimlane)
             with Vertical(id="session-panel"):
                 yield Static(" SESSIONS", classes="panel-title")
                 yield Input(
@@ -103,9 +122,9 @@ class MainScreen(Screen):
                 yield SessionDetail()
         yield Static(
             " [#fb923c]↑↓[/] Navigate  [#fb923c]Tab[/] Panel  "
-            "[#fb923c]1-4[/] Status  [#fb923c]/[/] Search  "
+            "[#fb923c]0-4[/] Filter  [#fb923c]/[/] Search  "
             "[#fb923c]r[/] Resume  [#fb923c]s[/] AI  "
-            "[#fb923c]g[/] Graph  [#fb923c]D[/] Archive  [#fb923c]q[/] Quit",
+            "[#fb923c]g[/] View  [#fb923c]D[/] Archive  [#fb923c]q[/] Quit",
             id="footer-bar",
         )
 
@@ -152,7 +171,7 @@ class MainScreen(Screen):
         self,
         projects: list[Project],
         all_meta: dict[str, SessionMeta],
-        running: dict[str, bool],
+        running: dict[str, dict],
         display_names: dict[str, str],
     ) -> None:
         """Called on UI thread when discovery completes (fast path)."""
@@ -215,6 +234,7 @@ class MainScreen(Screen):
             all_meta=self._all_meta,
             last_thoughts=self._last_thoughts,
             lineage_types=self._lineage_types,
+            workflow_cluster=self._workflow_cluster,
         )
 
     # ── Worktree selection ──────────────────────────────────────────────────
@@ -272,6 +292,14 @@ class MainScreen(Screen):
                     session.ai_title_from_cc = info.ai_title_from_cc
                     session.forked_from_session = info.forked_from_session
 
+                    # Propagate new high-value fields from parser
+                    session.last_prompt = info.last_prompt
+                    session.compact_summaries = info.compact_summaries
+                    session.model_name = info.model_name
+                    session.total_input_tokens = info.total_input_tokens
+                    session.total_output_tokens = info.total_output_tokens
+                    session.last_user_message = info.last_user_message
+
                     # Enrich with display_name and running state
                     if hasattr(self, '_display_names') and session.session_id in self._display_names:
                         session.display_name = self._display_names[session.session_id]
@@ -282,10 +310,17 @@ class MainScreen(Screen):
                 except Exception as e:
                     logger.debug("Skip session %s: %s", session.session_id, e)
 
-            # Classify (pass running info for kind-based BACKGROUND detection)
-            classify_all(parsed, self._all_meta, all_running=self._running)
+            # ── Sync AI titles from meta to session display_name ──
+            # If meta.name exists (previously AI-generated), prefer it over
+            # meaningless display_name like /resume, /clear
+            for s in parsed:
+                meta = self._all_meta.get(s.session_id)
+                if meta and meta.name and _is_meaningless_title(s.display_name or ''):
+                    s.display_name = meta.name
 
             # ── Lineage scanning (pain points #1, #5, #6, #7) ──
+            # NOTE: Must run BEFORE classify_all so that corrected
+            # last_timestamp is used for status inference (M2 fix).
             lineage_types: dict[str, str] = {}
             lineage_signals_local: dict[str, LineageSignals] = {}
             for s in parsed:
@@ -305,6 +340,9 @@ class MainScreen(Screen):
                         lineage_types[s.session_id] = "compact"
                 except Exception:
                     pass
+
+            # Classify AFTER lineage scanning so corrected timestamps are used
+            classify_all(parsed, self._all_meta, all_running=self._running)
 
             # ── Build search index (pain points #3, #4) ──
             index_entries = []
@@ -394,10 +432,8 @@ class MainScreen(Screen):
 
         self._update_session_list()
 
-        # Show workflow overview or refresh swimlane
-        if self._graph_visible and self._workflow_cluster:
-            self._show_graph()
-        elif self._workflow_cluster and not self._selected_session:
+        # Show workflow overview in detail panel (before any session is selected)
+        if self._workflow_cluster and not self._selected_session:
             detail = self.query_one(SessionDetail)
             session_statuses = {s.session_id: s.status for s in self._current_sessions}
             detail.show_workflows(self._workflow_cluster, session_statuses)
@@ -409,6 +445,9 @@ class MainScreen(Screen):
             self._ai_cluster_timer = self.set_timer(
                 2.0, self._try_ai_workflow_naming
             )
+
+        # Schedule background batch AI title generation (non-blocking)
+        self.set_timer(1.0, lambda: self._batch_enrich_sessions())
 
     # ── Session selection ───────────────────────────────────────────────────
 
@@ -443,6 +482,27 @@ class MainScreen(Screen):
                 lambda: self._try_silent_summary(session),
             )
 
+    def on_session_list_panel_workflow_selected(
+        self, event: SessionListPanel.WorkflowSelected
+    ) -> None:
+        """Display workflow detail when a swimlane lane is clicked."""
+        self._selected_session = None
+        detail = self.query_one(SessionDetail)
+        session_statuses = {s.session_id: s.status for s in self._current_sessions}
+        detail.show_workflow_detail(event.workflow, session_statuses)
+
+    def on_session_list_panel_view_mode_changed(
+        self, event: SessionListPanel.ViewModeChanged
+    ) -> None:
+        """React to view mode change in middle panel."""
+        if event.mode == "swimlane" and self._workflow_cluster:
+            if not self._selected_session:
+                detail = self.query_one(SessionDetail)
+                session_statuses = {
+                    s.session_id: s.status for s in self._current_sessions
+                }
+                detail.show_workflows(self._workflow_cluster, session_statuses)
+
     @work(thread=True)
     def _load_session_detail(self, session: SessionInfo) -> None:
         """Load session detail data in background.
@@ -450,6 +510,7 @@ class MainScreen(Screen):
         Uses summarizer module for milestone extraction (extract mode by default).
         Cached summaries are reused automatically.
         Also triggers AI title generation if no display_name is set.
+        Loads compact summary parsing and tool_use detail data for new layout.
         """
         try:
             meta = load_meta(session.session_id)
@@ -465,8 +526,19 @@ class MainScreen(Screen):
                 mode="extract",  # Default to free rule-based extraction
             )
 
+            # Parse compact summary (zero cost — data already in SessionInfo)
+            compact_parsed = None
+            if session.compact_summaries:
+                from ccsm.core.compact_parser import parse_compact_summary
+                compact_parsed = parse_compact_summary(session.compact_summaries[-1])
+
+            # Deep parse for tool_use operations (on-demand, slightly heavier)
+            from ccsm.core.parser import parse_session_detail
+            detail_data = parse_session_detail(session.jsonl_path)
+
             self.app.call_from_thread(
-                self._on_detail_loaded, session, meta, summary, replies
+                self._on_detail_loaded, session, meta, summary, replies,
+                detail_data, compact_parsed,
             )
 
             # AI title generation — lazy, only if no name cached
@@ -482,12 +554,17 @@ class MainScreen(Screen):
         meta,
         summary,
         replies: list[str],
+        detail_data=None,
+        compact_parsed=None,
     ) -> None:
         """Update detail panel on UI thread."""
         # Only update if this session is still selected
         if self._selected_session and self._selected_session.session_id == session.session_id:
             detail = self.query_one(SessionDetail)
-            detail.show_session(session, meta=meta, summary=summary, last_replies=replies)
+            detail.show_session(
+                session, meta=meta, summary=summary, last_replies=replies,
+                detail_data=detail_data, compact_parsed=compact_parsed,
+            )
 
     # ── Actions ─────────────────────────────────────────────────────────────
 
@@ -616,6 +693,7 @@ class MainScreen(Screen):
             all_meta=self._all_meta,
             last_thoughts=self._last_thoughts,
             lineage_types=self._lineage_types,
+            workflow_cluster=self._workflow_cluster,
         )
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
@@ -694,6 +772,11 @@ class MainScreen(Screen):
     def action_switch_tab_4(self) -> None:
         self._switch_tab(Status.DONE)
 
+    def action_switch_tab_all(self) -> None:
+        """Switch to ALL filter (show all statuses)."""
+        panel = self.query_one(SessionListPanel)
+        panel.set_filter_all()
+
     def action_focus_next_panel(self) -> None:
         """Cycle focus to next panel."""
         self.screen.focus_next()
@@ -743,44 +826,113 @@ class MainScreen(Screen):
                 lambda e=e: self.notify(f"Archive failed: {e}", severity="error")
             )
 
-    # ── Graph view ────────────────────────────────────────────────────
 
-    def action_toggle_graph(self) -> None:
-        """Toggle swimlane timeline view in the detail panel (pain point #8)."""
-        self._graph_visible = not self._graph_visible
-        if self._graph_visible:
-            self._show_graph()
-        elif self._selected_session:
-            self._load_session_detail(self._selected_session)
-        elif self._workflow_cluster:
-            detail = self.query_one(SessionDetail)
-            session_statuses = {s.session_id: s.status for s in self._current_sessions}
-            detail.show_workflows(self._workflow_cluster, session_statuses)
+    # ── Batch AI enrichment ──────────────────────────────────────────
 
-    def _show_graph(self) -> None:
-        """Build and display swimlane timeline from workflow data."""
-        from ccsm.tui.widgets.swimlane import Swimlane
+    @work(thread=True)
+    def _batch_enrich_sessions(self) -> None:
+        """Background batch: generate AI titles + extract summaries for all sessions.
 
-        if not self._workflow_cluster:
-            self.notify("No workflow data — select a worktree first", severity="warning")
-            self._graph_visible = False
+        Runs after initial load to populate AI content that was previously
+        only generated on-demand (lazy loading). This ensures the session list
+        shows meaningful titles instead of /resume, /clear etc.
+        """
+        from ccsm.core.meta import load_summary as _load_summary
+
+        sessions = list(self._current_sessions)
+        if not sessions:
             return
 
-        detail = self.query_one(SessionDetail)
-        detail.remove_children()
+        # ── Phase 1: Batch extract summaries (zero cost, no API) ──
+        extract_count = 0
+        for s in sessions:
+            if s.status == Status.NOISE:
+                continue
+            try:
+                cached = _load_summary(s.session_id)
+                if cached and cached.milestones:
+                    continue  # Already has summary
+                if s.message_count < 4:
+                    continue  # Too short
+                summarize_session(
+                    session_id=s.session_id,
+                    jsonl_path=s.jsonl_path,
+                    mode="extract",
+                )
+                extract_count += 1
+            except Exception:
+                pass
 
-        session_statuses = {s.session_id: s.status for s in self._current_sessions}
+        if extract_count > 0:
+            logger.info("Batch extracted %d summaries", extract_count)
 
-        widget = Swimlane()
-        detail.mount(widget)
-        widget.set_data(
-            self._workflow_cluster,
-            statuses=session_statuses,
-            current_session_id=(
-                self._selected_session.session_id
-                if self._selected_session else None
-            ),
-        )
+        # ── Phase 2: Batch AI title generation (API calls, throttled) ──
+        # Sort by status priority: ACTIVE first
+        status_rank = {
+            Status.ACTIVE: 0, Status.BACKGROUND: 1,
+            Status.IDEA: 2, Status.DONE: 3, Status.NOISE: 99,
+        }
+        candidates = [
+            s for s in sessions
+            if s.message_count >= 8
+            and _is_meaningless_title(s.display_title)
+            and s.status != Status.NOISE
+        ]
+        candidates.sort(key=lambda s: status_rank.get(s.status, 99))
+
+        # Limit to 20 per batch
+        candidates = candidates[:20]
+
+        if not candidates:
+            return
+
+        for i, session in enumerate(candidates):
+            # Check if we are still viewing the same worktree
+            if session not in self._current_sessions:
+                break
+
+            try:
+                messages = parse_session_messages(session.jsonl_path)
+                if not messages or len(messages) < 4:
+                    continue
+
+                result = generate_ai_title_sync(session.session_id, messages)
+                if result is None:
+                    continue
+
+                ai_title, intent = result
+                session.display_name = ai_title
+
+                # Save to sidecar
+                try:
+                    lock_title(session.session_id, ai_title)
+                except Exception:
+                    pass
+
+                # Refresh UI every 3 sessions (avoid too frequent updates)
+                if (i + 1) % 3 == 0 or i == len(candidates) - 1:
+                    self.app.call_from_thread(self._update_session_list)
+
+                logger.info(
+                    "Batch AI title [%d/%d]: %s → %r",
+                    i + 1, len(candidates), session.session_id[:8], ai_title,
+                )
+
+                # Throttle: 0.5s between API calls
+                time.sleep(0.5)
+
+            except Exception as e:
+                logger.debug("Batch AI title failed for %s: %s", session.session_id[:8], e)
+
+        # Final refresh
+        self.app.call_from_thread(self._update_session_list)
+
+    # ── View toggle (list ↔ swimlane) ────────────────────────────────
+
+    def action_toggle_graph(self) -> None:
+        """Toggle middle panel between list and swimlane view (g key)."""
+        panel = self.query_one(SessionListPanel)
+        panel.toggle_view_mode()
 
     def _try_ai_workflow_naming(self) -> None:
         """Trigger background AI workflow naming if not already cached."""
@@ -830,7 +982,7 @@ class MainScreen(Screen):
             save_workflows(updated)
 
             # Refresh detail panel if still showing workflows
-            if not self._selected_session and not self._graph_visible:
+            if not self._selected_session:
                 session_statuses = {
                     s.session_id: s.status for s in self._current_sessions
                 }
