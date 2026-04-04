@@ -27,6 +27,7 @@ class CCSMApp(App):
 
     BINDINGS = [
         ("t", "toggle_theme", "Theme"),
+        ("l", "toggle_language", "Lang"),
     ]
 
     def on_mount(self) -> None:
@@ -40,18 +41,30 @@ class CCSMApp(App):
         else:
             self.add_class("-light-theme")
 
+    def action_toggle_language(self) -> None:
+        """Toggle between zh-CN and English."""
+        from ccsm.core.i18n import get_language, set_language
+
+        new_lang = "en" if get_language() == "zh-CN" else "zh-CN"
+        set_language(new_lang)
+        self.notify(f"Language: {new_lang}", timeout=2)
+
 
 def run() -> None:
     """Launch the CCSM TUI application.
 
-    If the user selects 'Resume' (r), the app returns the session_id.
-    We then launch `claude --resume {session_id}` AFTER Textual fully exits,
-    ensuring the terminal is properly restored before spawning a new process.
+    If the user selects 'Resume' (r), the app returns the JSONL file path
+    (or session_id as fallback). We then launch `claude --resume` AFTER
+    Textual fully exits, ensuring the terminal is properly restored.
+
+    Using JSONL path instead of session_id ensures cross-worktree resume
+    works correctly — Claude Code's session_id lookup depends on cwd matching
+    the project directory where the session was created.
     """
     app = CCSMApp()
     result = app.run()
 
-    # If result is a session_id string, launch claude --resume
+    # If result is a string (jsonl path or session_id), launch claude --resume
     if result and isinstance(result, str):
         subprocess.run(["claude", "--resume", result])
 

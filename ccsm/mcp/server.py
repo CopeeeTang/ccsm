@@ -100,7 +100,7 @@ def _session_to_dict(
 def _build_session_map(
     force_refresh: bool = False,
 ) -> tuple[dict[str, SessionInfo], dict[str, tuple[str, str | None]], dict[str, SessionMeta]]:
-    """Build lookup maps with TTL caching.
+    """Build lookup maps with TTL caching + SQLite incremental index.
 
     Returns:
         (session_map, context_map, all_meta)
@@ -115,6 +115,15 @@ def _build_session_map(
         and (now - _cache["timestamp"]) < _CACHE_TTL_SECONDS  # type: ignore[operator]
     ):
         return _cache["session_map"], _cache["context_map"], _cache["all_meta"]  # type: ignore[return-value]
+
+    # Try incremental refresh via SQLite (best-effort acceleration)
+    try:
+        from ccsm.core.index_db import incremental_refresh
+        refreshed_count = incremental_refresh()
+        if refreshed_count > 0:
+            logger.info("Incrementally refreshed %d sessions", refreshed_count)
+    except Exception as e:
+        logger.debug("SQLite incremental refresh unavailable: %s", e)
 
     projects = discover_projects()
     running = load_running_sessions()
@@ -361,7 +370,12 @@ def search_sessions(query: str) -> list[dict]:
     ),
 )
 def resume_session(session_id: str) -> dict:
-    """Return the `claude --resume` command for a session."""
+    """Return the `claude --resume` command for a session.
+
+    Uses JSONL file path instead of session_id to ensure cross-worktree
+    resume works. Claude Code's session_id lookup depends on cwd matching
+    the project directory, but JSONL path works from any directory.
+    """
     session_map, context_map, _all_meta = _build_session_map()
 
     if session_id not in session_map:
@@ -370,8 +384,11 @@ def resume_session(session_id: str) -> dict:
     info = session_map[session_id]
     project_name, wt_name = context_map[session_id]
 
-    # Build the resume command
-    command = f"claude --resume {session_id}"
+    # Prefer JSONL path for cross-worktree reliability
+    if info.jsonl_path and info.jsonl_path.exists():
+        command = f"claude --resume {info.jsonl_path}"
+    else:
+        command = f"claude --resume {session_id}"
 
     return {
         "session_id": session_id,
@@ -381,6 +398,80 @@ def resume_session(session_id: str) -> dict:
         "status": info.status.value,
         "cwd": info.cwd,
     }
+
+
+# ─── Tool: enter_session ─────────────────────────────────────────────────
+
+
+@mcp.tool(
+    name="enter_session",
+    description=(
+        "Prepare context for entering/resuming a previous Claude Code session. "
+        "Returns session summary, breakpoint, last milestones, and the resume command. "
+        "Use this to understand what happened before resuming."
+    ),
+)
+def enter_session(session_id: str) -> dict:
+    """Provide rich context for resuming a session."""
+    from ccsm.core.meta import load_summary
+
+    session_map, context_map, all_meta = _build_session_map()
+
+    if session_id not in session_map:
+        return {"error": f"Session not found: {session_id}"}
+
+    info = session_map[session_id]
+    project_name, wt_name = context_map[session_id]
+    meta = all_meta.get(session_id, SessionMeta(session_id=session_id))
+
+    # Build context
+    # Prefer JSONL path for cross-worktree reliability
+    if info.jsonl_path and info.jsonl_path.exists():
+        resume_cmd = f"claude --resume {info.jsonl_path}"
+    else:
+        resume_cmd = f"claude --resume {session_id}"
+
+    result = {
+        "session_id": session_id,
+        "title": meta.name or info.display_title,
+        "command": resume_cmd,
+        "is_running": info.is_running,
+        "status": info.status.value,
+        "cwd": info.cwd,
+        "git_branch": info.git_branch,
+        "message_count": info.message_count,
+    }
+
+    # Add summary context if available
+    cached = load_summary(session_id)
+    if cached:
+        result["summary"] = {
+            "description": cached.description,
+            "milestones": [
+                {"label": ms.label, "status": ms.status.value}
+                for ms in (cached.milestones or [])[-5:]  # Last 5 milestones
+            ],
+        }
+        if cached.breakpoint:
+            result["breakpoint"] = {
+                "milestone": cached.breakpoint.milestone_label,
+                "detail": cached.breakpoint.detail,
+                "last_topic": cached.breakpoint.last_topic,
+            }
+        if cached.digest:
+            result["digest"] = {
+                "goal": cached.digest.goal,
+                "progress": cached.digest.progress,
+                "next_steps": cached.digest.next_steps,
+                "blocker": cached.digest.blocker,
+            }
+
+    # Add last assistant snippet for quick context
+    last_msgs = get_last_assistant_messages(info.jsonl_path, count=1)
+    if last_msgs:
+        result["last_reply_snippet"] = last_msgs[0].content[:300]
+
+    return result
 
 
 # ─── Tool: summarize_session ──────────────────────────────────────────────
@@ -510,6 +601,66 @@ def update_session_meta(
             "notes": meta.notes,
             "updated_at": meta.updated_at.isoformat() if meta.updated_at else None,
         },
+    }
+
+
+# ─── Tool: batch_summarize ───────────────────────────────────────────────
+
+
+@mcp.tool(
+    name="batch_summarize",
+    description=(
+        "Generate AI summaries for sessions that don't have one yet. "
+        "Uses external API mode. Returns count of newly summarized sessions."
+    ),
+)
+def batch_summarize(
+    limit: int = 10,
+    status: Optional[str] = None,
+) -> dict:
+    """Batch generate summaries for un-summarized sessions."""
+    from ccsm.core.meta import load_summary as _load_summary
+    from ccsm.core.summarizer import summarize_session as _summarize
+
+    session_map, context_map, _all_meta = _build_session_map()
+
+    candidates = []
+    for sid, info in session_map.items():
+        if info.message_count < 8:
+            continue
+        if status:
+            try:
+                if info.status != Status(status):
+                    continue
+            except ValueError:
+                continue
+        cached = _load_summary(sid)
+        if cached and cached.mode == "llm":
+            continue
+        candidates.append((sid, info))
+
+    candidates.sort(key=lambda x: x[1].message_count, reverse=True)
+    candidates = candidates[:limit]
+
+    summarized = 0
+    errors = 0
+    for sid, info in candidates:
+        try:
+            _summarize(
+                session_id=sid,
+                jsonl_path=info.jsonl_path,
+                mode="llm",
+                force=True,
+            )
+            summarized += 1
+        except Exception as e:
+            logger.warning("Batch summarize failed for %s: %s", sid, e)
+            errors += 1
+
+    return {
+        "summarized": summarized,
+        "errors": errors,
+        "total_candidates": len(candidates),
     }
 
 

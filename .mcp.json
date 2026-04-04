@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "ccsm": {
+      "type": "stdio",
+      "command": "/home/v-tangxin/GUI/ml_env/bin/python3",
+      "args": ["-m", "ccsm.mcp.server"],
+      "env": {
+        "PYTHONPATH": "/home/v-tangxin/GUI/projects/ccsm"
+      }
+    }
+  }
+}

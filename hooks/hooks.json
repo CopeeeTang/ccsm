@@ -1,0 +1,51 @@
+{
+  "description": "CCSM session lifecycle hooks",
+  "hooks": {
+    "Setup": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "_R=\"${CLAUDE_PLUGIN_ROOT}\"; [ -z \"$_R\" ] && _R=\"/home/v-tangxin/GUI/projects/ccsm\"; node \"$_R/scripts/worker.js\" index-refresh",
+            "timeout": 60
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "startup|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "_R=\"${CLAUDE_PLUGIN_ROOT}\"; [ -z \"$_R\" ] && _R=\"/home/v-tangxin/GUI/projects/ccsm\"; node \"$_R/scripts/worker.js\" index-refresh",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "_R=\"${CLAUDE_PLUGIN_ROOT}\"; [ -z \"$_R\" ] && _R=\"/home/v-tangxin/GUI/projects/ccsm\"; node \"$_R/scripts/stop-hook.js\"",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "_R=\"${CLAUDE_PLUGIN_ROOT}\"; [ -z \"$_R\" ] && _R=\"/home/v-tangxin/GUI/projects/ccsm\"; node \"$_R/scripts/worker.js\" session-ended",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

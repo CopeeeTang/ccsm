@@ -385,6 +385,16 @@ class MainScreen(Screen):
             from ccsm.core.lineage import build_lineage_graph
             from ccsm.core.workflow import extract_workflows
             graph = build_lineage_graph(lineage_signals_local)
+
+            # Enrich lineage_types from graph (graph has more accurate types)
+            # The signal-based detection above only catches compact/fork from
+            # JSONL signals; the graph also detects DUPLICATE via time overlap.
+            for sid, node in graph.items():
+                if sid not in lineage_types:
+                    lt_str = node.lineage_type.value  # "root"/"compact"/"fork"/"duplicate"
+                    if lt_str != "root":
+                        lineage_types[sid] = lt_str
+
             wf_titles = {}
             for s in parsed:
                 meta_s = self._all_meta.get(s.session_id)
@@ -570,15 +580,21 @@ class MainScreen(Screen):
     def action_resume_session(self) -> None:
         """Resume the selected session via claude --resume.
 
-        Passes session_id out via app.exit(result=...) so the caller can
-        launch claude AFTER Textual has fully restored the terminal.
+        Uses the JSONL file path instead of session_id to ensure cross-worktree
+        resume works correctly. Claude Code resolves session_id by cwd, but
+        the JSONL path works regardless of current working directory.
         """
         if self._selected_session is None:
             self.notify("No session selected", severity="warning")
             return
 
-        sid = self._selected_session.session_id
-        self.app.exit(result=sid)
+        session = self._selected_session
+        # Use jsonl_path for reliable cross-worktree resume
+        if session.jsonl_path and session.jsonl_path.exists():
+            self.app.exit(result=str(session.jsonl_path))
+        else:
+            # Fallback to session_id (same-project resume)
+            self.app.exit(result=session.session_id)
 
     def action_toggle_noise(self) -> None:
         """Toggle NOISE session visibility."""
@@ -900,21 +916,22 @@ class MainScreen(Screen):
             logger.info("Batch extracted %d summaries", extract_count)
 
         # ── Phase 2: Batch AI title generation (API calls, throttled) ──
-        # Sort by status priority: ACTIVE first
+        # Only generate AI titles for sessions that truly have NO title at all.
+        # Respect user's original display_name — don't replace meaningful titles.
         status_rank = {
             Status.ACTIVE: 0, Status.BACKGROUND: 1,
             Status.IDEA: 2, Status.DONE: 3, Status.NOISE: 99,
         }
         candidates = [
             s for s in sessions
-            if s.message_count >= 8
-            and _is_meaningless_title(s.display_title)
+            if s.message_count >= 12  # Higher threshold: need enough content
+            and (not s.display_name or s.display_name == s.session_id[:8])  # Only when truly no title
             and s.status != Status.NOISE
         ]
         candidates.sort(key=lambda s: status_rank.get(s.status, 99))
 
-        # Limit to 40 per batch (increased from 20 for better coverage)
-        candidates = candidates[:40]
+        # Limit to 10 per batch (conservative — respect API budget)
+        candidates = candidates[:10]
 
         if not candidates:
             return

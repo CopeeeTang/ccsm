@@ -1,0 +1,10 @@
+{
+  "name": "ccsm",
+  "version": "0.1.0",
+  "description": "Claude Code Session Manager — query, search, resume and manage Claude Code sessions across projects",
+  "author": {
+    "name": "tangxin"
+  },
+  "license": "MIT",
+  "keywords": ["session", "manager", "resume", "history", "context"]
+}
