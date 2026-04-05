@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from ccsm.core.i18n import get_prompts
 from ccsm.core.meta import load_summary, save_summary
 from ccsm.core.milestones import extract_breakpoint, extract_milestones
 from ccsm.core.parser import parse_session_messages
@@ -181,7 +182,8 @@ def _call_llm(
     conversation = _format_messages_for_prompt(messages)
     duration = _format_duration(messages)
 
-    user_prompt = _USER_PROMPT_TEMPLATE.format(
+    prompts = get_prompts()
+    user_prompt = prompts.milestones_user.format(
         msg_count=len(messages),
         duration=duration,
         conversation=conversation,
@@ -195,7 +197,7 @@ def _call_llm(
         response = client.messages.create(
             model=model,
             max_tokens=max_tokens,
-            system=_SYSTEM_PROMPT,
+            system=prompts.milestones_system,
             messages=[{"role": "user", "content": user_prompt}],
         )
 
@@ -456,7 +458,8 @@ async def generate_ai_title(
 
     # Escape braces in user content to prevent .format() KeyError
     safe_context = context.replace("{", "{{").replace("}", "}}")
-    prompt = _TITLE_PROMPT_TEMPLATE.format(context=safe_context)
+    prompts = get_prompts()
+    prompt = prompts.title_user.format(context=safe_context)
 
     # ── API call ─────────────────────────────────────────────────────────────
     try:
@@ -487,7 +490,8 @@ async def generate_ai_title(
             logger.warning("AI title: no JSON found in response: %r", content[:200])
             return None
         title = result.get("title", "").strip()
-        intent = result.get("intent", "").strip()
+        # 兼容新旧格式: summary (新) 或 intent (旧)
+        intent = result.get("summary", result.get("intent", "")).strip()
 
         if not title:
             logger.warning("AI title: empty title in response")
@@ -600,7 +604,7 @@ async def refine_compact_summary(
         compact_text = compact_text[:8000] + "\n... (truncated)"
 
     safe_text = compact_text.replace("{", "{{").replace("}", "}}")
-    user_prompt = _COMPACT_REFINE_USER.format(compact_text=safe_text)
+    user_prompt = get_prompts().compact_user.format(compact_text=safe_text)
 
     try:
         import httpx
@@ -611,7 +615,7 @@ async def refine_compact_summary(
                 json={
                     "model": model,
                     "messages": [
-                        {"role": "system", "content": _COMPACT_REFINE_PROMPT},
+                        {"role": "system", "content": get_prompts().compact_system},
                         {"role": "user", "content": user_prompt},
                     ],
                     "max_tokens": 1024,
@@ -772,7 +776,7 @@ def _build_digest_prompt(
     else:
         milestones_section = ""
 
-    return _DIGEST_USER_TEMPLATE.format(
+    return get_prompts().digest_user.format(
         msg_count=len(messages),
         duration=duration,
         compact_section=compact_section,
@@ -824,10 +828,10 @@ async def generate_digest(
                 json={
                     "model": model,
                     "messages": [
-                        {"role": "system", "content": _DIGEST_SYSTEM_PROMPT},
+                        {"role": "system", "content": get_prompts().digest_system},
                         {"role": "user", "content": user_prompt},
                     ],
-                    "max_tokens": 1024,
+                    "max_tokens": 2048,
                     "temperature": 0.2,
                 },
             )
@@ -842,11 +846,17 @@ async def generate_digest(
 
             data = json.loads(raw_text)
 
+            # Legacy compat: default goal/next_steps to safe values
+            # since existing consumers (MCP server, TUI) call digest.goal
+            # and ', '.join(digest.next_steps) which would crash on None
+            todo_items = data.get("todo", data.get("next_steps", []))
             digest = SessionDigest(
-                goal=data.get("goal", ""),
                 progress=data.get("progress", ""),
                 breakpoint=data.get("breakpoint", ""),
-                next_steps=data.get("next_steps", []),
+                decisions=data.get("decisions", []),
+                todo=todo_items,
+                goal=data.get("goal", ""),
+                next_steps=todo_items,  # mirror todo for legacy consumers
                 blocker=data.get("blocker"),
             )
 
@@ -955,14 +965,14 @@ async def extract_facts(
     sections = []
 
     if digest:
+        decisions_str = ', '.join(digest.decisions) if digest.decisions else ''
+        todo_str = ', '.join(digest.todo or digest.next_steps or [])
         digest_section = (
-            f"会话目标：{digest.goal}\n"
             f"进度：{digest.progress}\n"
             f"断点：{digest.breakpoint}\n"
-            f"下一步：{', '.join(digest.next_steps)}"
+            f"决策：{decisions_str}\n"
+            f"待办：{todo_str}"
         )
-        if digest.blocker:
-            digest_section += f"\n阻塞：{digest.blocker}"
     else:
         digest_section = ""
 
@@ -996,7 +1006,7 @@ async def extract_facts(
     def _esc(s: str) -> str:
         return s.replace("{", "{{").replace("}", "}}")
 
-    user_prompt = _FACTS_USER_TEMPLATE.format(
+    user_prompt = get_prompts().facts_user.format(
         digest_section=_esc(digest_section),
         compact_section=_esc(compact_section),
         milestones_section=_esc(milestones_section),
@@ -1011,7 +1021,7 @@ async def extract_facts(
                 json={
                     "model": model,
                     "messages": [
-                        {"role": "system", "content": _FACTS_SYSTEM_PROMPT},
+                        {"role": "system", "content": get_prompts().facts_system},
                         {"role": "user", "content": user_prompt},
                     ],
                     "max_tokens": 1024,

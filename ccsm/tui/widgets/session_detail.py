@@ -287,24 +287,25 @@ class SessionDetail(VerticalScroll):
         K = "#b0aea5"
         lines: list[str] = []
 
-        # Goal
-        lines.append(f"  [#d97757 bold]🎯 Goal[/]      [{V}]{rich_escape(digest.goal)}[/]")
-
         # Progress
         lines.append(f"  [#788c5d bold]📊 Progress[/]  [{V}]{rich_escape(digest.progress)}[/]")
 
-        # Breakpoint
-        lines.append(f"  [#6a9bcc bold]📍 Stopped[/]   [{V}]{rich_escape(digest.breakpoint)}[/]")
+        # Decisions
+        decisions = digest.decisions if digest.decisions else []
+        if decisions:
+            lines.append(f"  [#d97757 bold]⚖ Decisions[/]")
+            for dec in decisions:
+                lines.append(f"    [#d97757]•[/] [{V}]{rich_escape(dec)}[/]")
 
-        # Next Steps
-        if digest.next_steps:
-            lines.append(f"  [#a78bfa bold]→ Next[/]")
-            for step in digest.next_steps:
-                lines.append(f"    [#a78bfa]•[/] [{V}]{rich_escape(step)}[/]")
+        # Breakpoint (visually prominent)
+        lines.append(f"  [#e87b7b bold]⏸ Breakpoint[/] [{V}]{rich_escape(digest.breakpoint)}[/]")
 
-        # Blocker
-        if digest.blocker:
-            lines.append(f"  [#e87b7b bold]⚠ Blocker[/]   [{V}]{rich_escape(digest.blocker)}[/]")
+        # Todo
+        todo = digest.todo if digest.todo else digest.next_steps or []
+        if todo:
+            lines.append(f"  [#a78bfa bold]→ Todo[/]")
+            for item in todo:
+                lines.append(f"    [#a78bfa]•[/] [{V}]{rich_escape(item)}[/]")
 
         section.mount(Static("\n".join(lines), classes="detail-section-body"))
 

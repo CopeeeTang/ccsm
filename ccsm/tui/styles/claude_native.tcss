@@ -95,7 +95,7 @@ Screen {
 .session-card {
     layout: horizontal;
     height: auto;
-    max-height: 4;
+    max-height: 5;
     padding: 0 1;
     margin: 0;
     background: #1e1d1c;
@@ -260,17 +260,17 @@ Screen {
     border-bottom: solid #3a3835;
 }
 
-/* ── Drawer Overlay ────────────────────────────────────────────────────── */
+/* ── Drawer Overlay (centered modal) ──────────────────────────────────── */
 
 SessionDetailDrawer {
-    align: right middle;
+    align: center middle;
 }
 
 #drawer-panel {
-    width: 66%;
-    height: 100%;
+    width: 70%;
+    height: 90%;
     background: #121110;
-    border-left: solid #d97757;
+    border: solid #d97757;
     padding: 0;
 }
 
@@ -450,14 +450,14 @@ SessionDetailDrawer {
 
 .det-ms-item {
     height: auto;
-    padding: 0;
-    margin: 0;
+    padding: 0 0 0 0;
+    margin: 0 0 1 0;
 }
 
 .det-ms-active {
     height: auto;
     padding: 0 1;
-    margin: 0;
+    margin: 0 0 1 0;
     background: #d97757 10%;
     border-left: solid #d97757;
 }
@@ -465,7 +465,7 @@ SessionDetailDrawer {
 .det-ms-sub {
     height: auto;
     padding: 0;
-    margin: 0;
+    margin: 0 0 0 2;
     color: #b0aea5;
 }
 
@@ -674,7 +674,7 @@ SessionDetailDrawer {
 .-light-theme .lineage-expand-bar { background: #faf9f5; color: #5e5c54; }
 .-light-theme .lineage-expand-bar:hover { color: #c97040; background: rgba(217,119,87, 0.08); }
 
-.-light-theme #drawer-panel { background: #fdfdfc; }
+.-light-theme #drawer-panel { background: #fdfdfc; border: solid #c97040; }
 .-light-theme .drawer-title { background: #faf9f5; color: #5e5c54; border-bottom: solid #e6e4df; }
 .-light-theme #detail-content { background: #fdfdfc; }
 
@@ -718,7 +718,7 @@ SessionDetailDrawer {
 .-light-theme .card-msgcount { color: #5e5c54; }
 
 
-/* ── Fork Universe Block (Isolated parallel space) ── */
+/* ── Fork Universe Block (legacy class, replaced by fork-branch-block) ── */
 .fork-universe {
     background: #18161a;
     border: dashed rgba(168, 85, 247, 0.4);
@@ -727,26 +727,108 @@ SessionDetailDrawer {
     height: auto;
 }
 
+/* Fork universe: flatten history steps inside (no staircase in fork) */
+.fork-universe .history-step-1,
+.fork-universe .history-step-2,
+.fork-universe .history-step-3 {
+    margin-left: 0;
+    opacity: 0.8;
+}
+
+/* ── Lineage Group Container ── */
+.lineage-group {
+    margin: 0 0 1 0;
+    padding: 0;
+    height: auto;
+}
+
+/* ── Fork Branch Block (isolated purple space for fork sessions) ── */
+.fork-branch-block {
+    background: #18161a;
+    border: dashed rgba(168, 85, 247, 0.35);
+    margin: 1 1 1 4;
+    padding: 1 1;
+    height: auto;
+}
+
+.fork-branch-block .session-card {
+    border-left: tall #a855f7;
+    background: #141413;
+}
+
+/* Fork card (flat, inline — used when fork not in container) */
+.fork-card {
+    margin-left: 4;
+}
+
+.fork-card .card-body {
+    border-left: tall #a855f7;
+}
+
+.fork-anchor-label {
+    height: 1;
+    padding: 0 1;
+    margin-left: 4;
+    color: #a855f7;
+    text-style: bold;
+    margin-bottom: 0;
+}
+
+/* ── Fork Point Separator ── */
+.fork-point-separator {
+    height: 1;
+    padding: 0 1;
+    color: #a855f7;
+    margin: 1 0 0 0;
+}
+
+/* ── Compact Card (blue-tinted left border) ── */
+.compact-card .card-body {
+    border-left: tall #6a9bcc;
+}
+
+/* ── Duplicate Card (dimmed display) ── */
+.duplicate-card {
+    opacity: 0.65;
+}
+
+.duplicate-card .card-body {
+    border-left: tall #e87b7b;
+}
+
 .-light-theme .fork-universe {
     background: #fbf0ff;
     border: dashed #c084fc;
 }
 
-/* ── Stepped Compacts (Staircase margin for history) ── */
-.history-step-1 { 
-    margin-left: 2; 
-    margin-top: -1;
+.-light-theme .fork-branch-block {
+    background: #faf5ff;
+    border: dashed #c084fc;
+}
+
+.-light-theme .fork-card .card-body { border-left: tall #9333ea; }
+.-light-theme .fork-anchor-label { color: #9333ea; }
+
+.-light-theme .fork-anchor-label { color: #9333ea; }
+.-light-theme .fork-point-separator { color: #9333ea; }
+.-light-theme .compact-card .card-body { border-left: tall #3b82f6; }
+.-light-theme .duplicate-card .card-body { border-left: tall #ef4444; }
+
+/* ── Stepped Compacts (Staircase indent for history, NO negative margin) ── */
+.history-step-1 {
+    margin-left: 3;
+    margin-top: 0;
     opacity: 0.85;
 }
-.history-step-2 { 
-    margin-left: 4; 
-    margin-top: -1;
+.history-step-2 {
+    margin-left: 5;
+    margin-top: 0;
     opacity: 0.7;
 }
-.history-step-3 { 
-    margin-left: 6; 
-    margin-top: -1;
-    opacity: 0.55;
+.history-step-3 {
+    margin-left: 7;
+    margin-top: 0;
+    opacity: 0.6;
 }
 
 /* Hide intent for deep history for density */

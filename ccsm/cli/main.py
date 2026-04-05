@@ -16,9 +16,14 @@ from ccsm import __version__
 
 @click.group(invoke_without_command=True)
 @click.version_option(__version__, prog_name="ccsm")
+@click.option("--lang", type=click.Choice(["zh-CN", "en"]), default=None,
+              help="UI and prompt language (default: zh-CN, or CCSM_LANG env)")
 @click.pass_context
-def cli(ctx: click.Context) -> None:
+def cli(ctx: click.Context, lang: Optional[str]) -> None:
     """Claude Code Session Manager — manage your Claude sessions."""
+    if lang:
+        from ccsm.core.i18n import set_language
+        set_language(lang)
     if ctx.invoked_subcommand is None:
         # Default: launch TUI
         ctx.invoke(tui)
