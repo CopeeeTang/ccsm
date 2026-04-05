@@ -57,6 +57,89 @@ class LineageSignals:
 # ─── Signal Extraction ───────────────────────────────────────────────────────
 
 
+def extract_signals_from_lines(
+    lines: list[str],
+    display_name: Optional[str] = None,
+) -> LineageSignals:
+    """Extract lineage signals from pre-read JSONL lines.
+
+    Same logic as parse_lineage_signals() but avoids file I/O by
+    accepting already-read lines.  Used by parse_session_complete()
+    to eliminate the second file read.
+    """
+    signals = LineageSignals()
+
+    if display_name and _BRANCH_SUFFIX.search(display_name):
+        signals.is_fork = True
+        signals.fork_hint = "display_name_branch_suffix"
+
+    first_user_seen = False
+
+    for raw_line in lines:
+        raw_line = raw_line.strip()
+        if not raw_line:
+            continue
+        try:
+            entry = json.loads(raw_line)
+        except json.JSONDecodeError:
+            continue
+
+        # Extract sessionId (first occurrence wins)
+        if signals.session_id is None and "sessionId" in entry:
+            signals.session_id = entry["sessionId"]
+
+        # Extract cwd / gitBranch (last seen wins)
+        if "cwd" in entry:
+            signals.cwd = entry["cwd"]
+        if "gitBranch" in entry:
+            signals.git_branch = entry["gitBranch"]
+
+        entry_type = entry.get("type", "")
+        entry_subtype = entry.get("subtype", "")
+
+        # Compact boundary detection (including microcompact_boundary subtype)
+        if entry_type == "system" and entry_subtype in (
+            "compact_boundary",
+            "microcompact_boundary",
+        ):
+            signals.compact_count += 1
+            signals.has_compact_boundary = True
+
+        # forkedFrom field detection (any message type)
+        if not signals.is_fork:
+            forked_from = entry.get("forkedFrom")
+            if isinstance(forked_from, dict):
+                forked_session_id = forked_from.get("sessionId")
+                if forked_session_id:
+                    signals.is_fork = True
+                    signals.fork_hint = "forkedFrom_field"
+                    signals.fork_source_id = forked_session_id
+
+        # Timestamp tracking for user/assistant messages
+        if entry_type in ("user", "assistant"):
+            ts = _parse_timestamp(entry)
+            if ts is not None:
+                if signals.first_message_at is None or ts < signals.first_message_at:
+                    signals.first_message_at = ts
+                if signals.last_message_at is None or ts > signals.last_message_at:
+                    signals.last_message_at = ts
+
+        # First user message analysis
+        if entry_type == "user" and not first_user_seen:
+            first_user_seen = True
+            content = _extract_content(entry)
+            if content:
+                signals.first_user_content = content
+                # Check for compact summary as first user message
+                for prefix in _COMPACT_SUMMARY_PREFIXES:
+                    if content.startswith(prefix):
+                        signals.is_fork = True
+                        signals.fork_hint = "compact_summary_first_message"
+                        break
+
+    return signals
+
+
 def parse_lineage_signals(
     jsonl_path: Path,
     display_name: Optional[str] = None,
@@ -71,83 +154,17 @@ def parse_lineage_signals(
     Returns:
         LineageSignals with all detected signals populated.
     """
-    signals = LineageSignals()
-
-    # ── Check display_name for branch suffix ─────────────────────────────
-    if display_name and _BRANCH_SUFFIX.search(display_name):
-        signals.is_fork = True
-        signals.fork_hint = "display_name_branch_suffix"
-
-    # ── Read and scan JSONL ──────────────────────────────────────────────
     if not jsonl_path.exists():
+        signals = LineageSignals()
+        if display_name and _BRANCH_SUFFIX.search(display_name):
+            signals.is_fork = True
+            signals.fork_hint = "display_name_branch_suffix"
         return signals
 
-    first_user_seen = False
-
     with open(jsonl_path, "r", encoding="utf-8") as f:
-        for raw_line in f:
-            raw_line = raw_line.strip()
-            if not raw_line:
-                continue
-            try:
-                entry = json.loads(raw_line)
-            except json.JSONDecodeError:
-                continue
+        lines = f.readlines()
 
-            # Extract sessionId (first occurrence wins)
-            if signals.session_id is None and "sessionId" in entry:
-                signals.session_id = entry["sessionId"]
-
-            # Extract cwd / gitBranch (last seen wins)
-            if "cwd" in entry:
-                signals.cwd = entry["cwd"]
-            if "gitBranch" in entry:
-                signals.git_branch = entry["gitBranch"]
-
-            entry_type = entry.get("type", "")
-            entry_subtype = entry.get("subtype", "")
-
-            # Compact boundary detection (including microcompact_boundary subtype)
-            if entry_type == "system" and entry_subtype in (
-                "compact_boundary",
-                "microcompact_boundary",
-            ):
-                signals.compact_count += 1
-                signals.has_compact_boundary = True
-
-            # forkedFrom field detection (any message type)
-            if not signals.is_fork:
-                forked_from = entry.get("forkedFrom")
-                if isinstance(forked_from, dict):
-                    forked_session_id = forked_from.get("sessionId")
-                    if forked_session_id:
-                        signals.is_fork = True
-                        signals.fork_hint = "forkedFrom_field"
-                        signals.fork_source_id = forked_session_id
-
-            # Timestamp tracking for user/assistant messages
-            if entry_type in ("user", "assistant"):
-                ts = _parse_timestamp(entry)
-                if ts is not None:
-                    if signals.first_message_at is None or ts < signals.first_message_at:
-                        signals.first_message_at = ts
-                    if signals.last_message_at is None or ts > signals.last_message_at:
-                        signals.last_message_at = ts
-
-            # First user message analysis
-            if entry_type == "user" and not first_user_seen:
-                first_user_seen = True
-                content = _extract_content(entry)
-                if content:
-                    signals.first_user_content = content
-                    # Check for compact summary as first user message
-                    for prefix in _COMPACT_SUMMARY_PREFIXES:
-                        if content.startswith(prefix):
-                            signals.is_fork = True
-                            signals.fork_hint = "compact_summary_first_message"
-                            break
-
-    return signals
+    return extract_signals_from_lines(lines, display_name=display_name)
 
 
 # ─── Graph Construction ──────────────────────────────────────────────────────

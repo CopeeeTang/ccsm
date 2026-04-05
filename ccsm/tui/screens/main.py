@@ -32,6 +32,7 @@ from ccsm.core.lineage import LineageSignals, parse_lineage_signals
 from ccsm.core.meta import load_all_meta, load_meta, load_summary, lock_title, save_workflows
 from ccsm.core.parser import (
     get_last_assistant_messages,
+    parse_session_complete,
     parse_session_info,
     parse_session_messages,
 )
@@ -289,10 +290,24 @@ class MainScreen(Screen):
         """Parse session info, classify, extract thoughts — runs in thread."""
         try:
             parsed: list[SessionInfo] = []
+            lineage_types: dict[str, str] = {}
+            lineage_signals_local: dict[str, LineageSignals] = {}
+            last_thoughts: dict[str, str] = {}
+
+            # ── Single-pass: read each JSONL once ──
             for session in sessions:
                 try:
-                    info = parse_session_info(session.jsonl_path)
-                    # Fix: sync session_id from JSONL content (file stem may differ)
+                    info, sig, last_msgs = parse_session_complete(
+                        session.jsonl_path,
+                        display_name=(
+                            self._display_names.get(session.session_id)
+                            if hasattr(self, '_display_names')
+                            else None
+                        ),
+                        last_msg_count=1,
+                    )
+
+                    # Sync fields from info to session (same as before)
                     if info.session_id and info.session_id != session.jsonl_path.stem:
                         session.session_id = info.session_id
                     session.slug = info.slug
@@ -325,6 +340,19 @@ class MainScreen(Screen):
                     if hasattr(self, '_running') and session.session_id in self._running:
                         session.is_running = True
 
+                    # Lineage signals (from same read)
+                    lineage_signals_local[session.session_id] = sig
+                    if sig.last_message_at:
+                        session.last_timestamp = sig.last_message_at
+                    if sig.is_fork:
+                        lineage_types[session.session_id] = "fork"
+                    elif sig.has_compact_boundary:
+                        lineage_types[session.session_id] = "compact"
+
+                    # Last thought (from same read)
+                    if last_msgs:
+                        last_thoughts[session.session_id] = last_msgs[-1].content[:200]
+
                     parsed.append(session)
                 except Exception as e:
                     logger.debug("Skip session %s: %s", session.session_id, e)
@@ -336,29 +364,6 @@ class MainScreen(Screen):
                 meta = self._all_meta.get(s.session_id)
                 if meta and meta.name and _is_meaningless_title(s.display_name or ''):
                     s.display_name = meta.name
-
-            # ── Lineage scanning (pain points #1, #5, #6, #7) ──
-            # NOTE: Must run BEFORE classify_all so that corrected
-            # last_timestamp is used for status inference (M2 fix).
-            lineage_types: dict[str, str] = {}
-            lineage_signals_local: dict[str, LineageSignals] = {}
-            for s in parsed:
-                try:
-                    sig = parse_lineage_signals(
-                        s.jsonl_path,
-                        display_name=s.display_name,
-                    )
-                    lineage_signals_local[s.session_id] = sig
-                    # Fix pain point #6: use last_message_at from actual messages
-                    if sig.last_message_at:
-                        s.last_timestamp = sig.last_message_at
-                    # Track lineage type for badge display
-                    if sig.is_fork:
-                        lineage_types[s.session_id] = "fork"
-                    elif sig.has_compact_boundary:
-                        lineage_types[s.session_id] = "compact"
-                except Exception:
-                    pass
 
             # Classify AFTER lineage scanning so corrected timestamps are used
             classify_all(parsed, self._all_meta, all_running=self._running)
@@ -410,17 +415,7 @@ class MainScreen(Screen):
             for wf in wf_cluster.workflows:
                 wf.is_active = any(sid in active_sids for sid in wf.sessions)
 
-            # Extract last thoughts for non-noise sessions (performance)
-            last_thoughts: dict[str, str] = {}
-            for session in parsed:
-                if session.status == Status.NOISE:
-                    continue
-                try:
-                    msgs = get_last_assistant_messages(session.jsonl_path, count=1)
-                    if msgs:
-                        last_thoughts[session.session_id] = msgs[-1].content[:200]
-                except Exception:
-                    pass
+            # NOTE: last_thoughts already collected in single-pass loop above
 
             self.app.call_from_thread(
                 self._on_sessions_parsed, parsed, last_thoughts, label,
@@ -522,7 +517,13 @@ class MainScreen(Screen):
             meta = load_meta(session.session_id)
 
             # Load last assistant messages for reply display
-            last_msgs = get_last_assistant_messages(session.jsonl_path, count=3)
+            from ccsm.core.parse_cache import cached_parse_complete
+            _, _, cached_msgs = cached_parse_complete(session.jsonl_path)
+            # cached_msgs defaults to last 1; detail panel needs 3
+            if len(cached_msgs) >= 3:
+                last_msgs = cached_msgs[-3:]
+            else:
+                last_msgs = get_last_assistant_messages(session.jsonl_path, count=3)
             replies = [m.content for m in last_msgs if m.content]
 
             # Use summarizer: checks cache first, then extracts milestones

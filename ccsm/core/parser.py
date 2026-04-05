@@ -188,18 +188,11 @@ def _read_tail_lines(path: Path, n: int = 50) -> list[str]:
 # ─── Public API ──────────────────────────────────────────────────────────────
 
 
-def parse_session_info(jsonl_path: Path) -> SessionInfo:
-    """Quick scan of a JSONL file to extract session metadata.
+def _parse_session_info_from_lines(jsonl_path: Path, lines: list[str]) -> SessionInfo:
+    """Core session info extraction from pre-read lines.
 
-    Strategy: read the first line and the last ~50 lines to extract:
-    - session_id: from worktreeSession line or any message's sessionId field
-    - slug: from assistant messages (only some have it)
-    - first_timestamp / last_timestamp
-    - message_count / user_message_count (approximate from full scan of lines)
-    - cwd, git_branch
-
-    This avoids loading full message content, keeping it lightweight for
-    listing views.
+    Factored out of parse_session_info() so parse_session_complete()
+    can reuse it without an extra file read.
     """
     session_id = jsonl_path.stem  # fallback: filename without .jsonl
     slug: Optional[str] = None
@@ -227,8 +220,6 @@ def parse_session_info(jsonl_path: Path) -> SessionInfo:
     total_input_tokens = 0
     total_output_tokens = 0
     last_user_message: Optional[str] = None
-
-    lines = _read_lines(jsonl_path)
 
     for line in lines:
         line = line.strip()
@@ -387,6 +378,23 @@ def parse_session_info(jsonl_path: Path) -> SessionInfo:
     )
 
 
+def parse_session_info(jsonl_path: Path) -> SessionInfo:
+    """Quick scan of a JSONL file to extract session metadata.
+
+    Strategy: read the first line and the last ~50 lines to extract:
+    - session_id: from worktreeSession line or any message's sessionId field
+    - slug: from assistant messages (only some have it)
+    - first_timestamp / last_timestamp
+    - message_count / user_message_count (approximate from full scan of lines)
+    - cwd, git_branch
+
+    This avoids loading full message content, keeping it lightweight for
+    listing views.
+    """
+    lines = _read_lines(jsonl_path)
+    return _parse_session_info_from_lines(jsonl_path, lines)
+
+
 def parse_session_messages(jsonl_path: Path) -> list[JSONLMessage]:
     """Parse all user/assistant messages from a JSONL file.
 
@@ -451,6 +459,56 @@ def get_last_assistant_messages(
 
     # Return last N in chronological order
     return assistant_msgs[-count:]
+
+
+def parse_session_complete(
+    jsonl_path: Path,
+    display_name: Optional[str] = None,
+    last_msg_count: int = 1,
+) -> tuple[SessionInfo, "LineageSignals", list[JSONLMessage]]:
+    """Single-pass JSONL read returning session info, lineage signals, and last messages.
+
+    Replaces the triple-read pattern:
+        parse_session_info()         — 1st full read
+        parse_lineage_signals()      — 2nd full read
+        get_last_assistant_messages() — 3rd tail read
+
+    Now reads the file once and derives all three results from the
+    same line buffer.
+
+    Returns:
+        (SessionInfo, LineageSignals, list[JSONLMessage])
+    """
+    from ccsm.core.lineage import extract_signals_from_lines, LineageSignals
+
+    # Single file read
+    lines = _read_lines(jsonl_path)
+
+    # 1) SessionInfo — reuse existing logic with pre-read lines
+    info = _parse_session_info_from_lines(jsonl_path, lines)
+
+    # 2) LineageSignals — from same lines
+    signals = extract_signals_from_lines(lines, display_name=display_name)
+
+    # 3) Last assistant messages — scan all lines for assistant messages
+    assistant_msgs: list[JSONLMessage] = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            data = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if data.get("type") != "assistant":
+            continue
+        msg = _parse_message_line(data)
+        if msg is not None and msg.content:
+            assistant_msgs.append(msg)
+
+    last_msgs = assistant_msgs[-last_msg_count:] if last_msg_count > 0 else []
+
+    return info, signals, last_msgs
 
 
 # ─── Lightweight timestamp extraction ──────────────────────────────────────────
