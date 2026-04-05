@@ -922,10 +922,11 @@ class MainScreen(Screen):
             Status.ACTIVE: 0, Status.BACKGROUND: 1,
             Status.IDEA: 2, Status.DONE: 3, Status.NOISE: 99,
         }
+        # M-1 fix: include sessions with meaningless titles (slash commands, random slugs)
         candidates = [
             s for s in sessions
             if s.message_count >= 12  # Higher threshold: need enough content
-            and (not s.display_name or s.display_name == s.session_id[:8])  # Only when truly no title
+            and _is_meaningless_title(s.display_title)  # Covers /resume, random slugs, empty
             and s.status != Status.NOISE
         ]
         candidates.sort(key=lambda s: status_rank.get(s.status, 99))

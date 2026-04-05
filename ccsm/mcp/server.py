@@ -1,12 +1,14 @@
 """CCSM MCP Server — exposes Claude Code session management as MCP tools.
 
-6 tools:
+8 tools:
     list_sessions      — List sessions with optional filters (worktree, status, priority, tag)
     get_session_detail  — Full detail for a single session (description + last replies + metadata)
     search_sessions     — Fuzzy search across session titles, slugs, and tags
-    resume_session      — Generate `claude --resume {session_id}` command
+    resume_session      — Generate `claude --resume` command (uses JSONL path for cross-worktree)
+    enter_session       — Context-rich session preview for resume (goal, milestones, breakpoint)
     summarize_session   — Structured extraction of session summary
     update_session_meta — Update sidecar metadata (name, priority, tags, pin)
+    batch_summarize     — Batch generate AI summaries for un-summarized sessions
 
 Usage:
     python -m ccsm.mcp.server          # stdio transport (default)
@@ -116,14 +118,9 @@ def _build_session_map(
     ):
         return _cache["session_map"], _cache["context_map"], _cache["all_meta"]  # type: ignore[return-value]
 
-    # Try incremental refresh via SQLite (best-effort acceleration)
-    try:
-        from ccsm.core.index_db import incremental_refresh
-        refreshed_count = incremental_refresh()
-        if refreshed_count > 0:
-            logger.info("Incrementally refreshed %d sessions", refreshed_count)
-    except Exception as e:
-        logger.debug("SQLite incremental refresh unavailable: %s", e)
+    # H-1 fix: removed redundant incremental_refresh here — it duplicates
+    # the full parse that follows. SQLite index is refreshed via hooks
+    # (SessionStart/Stop/SessionEnd) instead.
 
     projects = discover_projects()
     running = load_running_sessions()
@@ -460,9 +457,13 @@ def enter_session(session_id: str) -> dict:
             }
         if cached.digest:
             result["digest"] = {
-                "goal": cached.digest.goal,
                 "progress": cached.digest.progress,
-                "next_steps": cached.digest.next_steps,
+                "decisions": cached.digest.decisions or [],
+                "breakpoint": cached.digest.breakpoint,
+                "todo": cached.digest.todo or cached.digest.next_steps or [],
+                # Legacy fields for backward compat
+                "goal": cached.digest.goal or "",
+                "next_steps": cached.digest.next_steps or [],
                 "blocker": cached.digest.blocker,
             }
 
@@ -621,6 +622,9 @@ def batch_summarize(
     """Batch generate summaries for un-summarized sessions."""
     from ccsm.core.meta import load_summary as _load_summary
     from ccsm.core.summarizer import summarize_session as _summarize
+
+    # M-5: cap limit to prevent runaway API calls
+    limit = min(limit, 50)
 
     session_map, context_map, _all_meta = _build_session_map()
 

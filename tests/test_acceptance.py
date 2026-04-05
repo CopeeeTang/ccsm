@@ -238,15 +238,26 @@ class TestTitleSystem:
         s = self._make_session(display_name="My Session", slug="some-slug")
         assert s.display_title == "My Session"
 
-    def test_display_title_keeps_slash_commands(self):
-        """F-18: display_name="/resume" 不被过滤, 直接展示."""
+    def test_display_title_skips_slash_commands(self):
+        """F-18: display_name="/resume" 被过滤, fallback 到下一级."""
         s = self._make_session(display_name="/resume")
-        assert s.display_title == "/resume"
+        # Slash commands are filtered — falls back to session_id[:8]
+        assert s.display_title == "abcdef12"
+        # But a real title with slash should work
+        s2 = self._make_session(display_name="fix/login bug")
+        assert s2.display_title == "fix/login bug"
 
     def test_display_title_fallback_slug(self):
-        """F-19: 无 display_name → fallback 到 slug."""
-        s = self._make_session(slug="fix-login-bug")
-        assert s.display_title == "fix-login-bug"
+        """F-19: 无 display_name → fallback 到 meaningful slug."""
+        # 4-part slug passes the 3-word filter
+        s = self._make_session(slug="fix-login-bug-v2")
+        assert s.display_title == "fix-login-bug-v2"
+        # slug with numbers passes
+        s2 = self._make_session(slug="tui-refactor-2026")
+        assert s2.display_title == "tui-refactor-2026"
+        # Random 3-word slug is filtered
+        s3 = self._make_session(slug="calm-tiger-moon")
+        assert s3.display_title == "abcdef12"
 
     def test_display_title_fallback_id(self):
         """F-20: 全部为空 → session_id[:8]."""
@@ -454,7 +465,7 @@ class TestIntegration:
         db.close()
 
     def test_all_mcp_tools_importable(self):
-        """I-05: 7 个 MCP 工具函数全部可导入."""
+        """I-05: 8 个 MCP 工具函数全部可导入."""
         from ccsm.mcp.server import (
             list_sessions,
             get_session_detail,
@@ -463,13 +474,14 @@ class TestIntegration:
             enter_session,
             summarize_session,
             update_session_meta,
+            batch_summarize,
         )
         tools = [
             list_sessions, get_session_detail, search_sessions,
             resume_session, enter_session, summarize_session,
-            update_session_meta,
+            update_session_meta, batch_summarize,
         ]
-        assert len(tools) == 7
+        assert len(tools) == 8
         for t in tools:
             assert callable(t), f"{t.__name__} is not callable"
 

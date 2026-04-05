@@ -40,7 +40,12 @@ CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
 
 
 class SessionIndexDB:
-    """SQLite persistent index for session metadata."""
+    """SQLite persistent index for session metadata.
+
+    Supports context manager protocol for safe resource cleanup:
+        with SessionIndexDB() as db:
+            db.upsert(...)
+    """
 
     def __init__(self, db_path: Path | None = None):
         self._db_path = db_path or _DEFAULT_DB_PATH
@@ -48,6 +53,13 @@ class SessionIndexDB:
         self._conn = sqlite3.connect(str(self._db_path))
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_SCHEMA)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+        return False
 
     def upsert(
         self,
@@ -136,46 +148,57 @@ class SessionIndexDB:
 def incremental_refresh(db_path: Path | None = None) -> int:
     """Run incremental refresh: scan ~/.claude/projects/, re-parse only changed files.
 
+    Also cleans up stale entries for sessions whose JSONL files no longer exist (H-4).
+
     Returns the number of sessions refreshed.
     """
     from ccsm.core.discovery import discover_projects
     from ccsm.core.parser import parse_session_info
 
-    db = SessionIndexDB(db_path=db_path)
-    projects = discover_projects()
-    refreshed = 0
+    with SessionIndexDB(db_path=db_path) as db:
+        projects = discover_projects()
+        refreshed = 0
+        seen_sids: set[str] = set()
 
-    for project in projects:
-        for session in project.all_sessions:
-            try:
-                mtime = session.jsonl_path.stat().st_mtime
-            except OSError:
-                continue
+        for project in projects:
+            for session in project.all_sessions:
+                try:
+                    mtime = session.jsonl_path.stat().st_mtime
+                except OSError:
+                    continue
 
-            if not db.needs_refresh(session.session_id, mtime):
-                continue
+                seen_sids.add(session.session_id)
 
-            # Parse this session's JSONL
-            try:
-                info = parse_session_info(session.jsonl_path)
-                sid = info.session_id or session.session_id
-                db.upsert(
-                    session_id=sid,
-                    jsonl_path=str(session.jsonl_path),
-                    jsonl_mtime=mtime,
-                    title=info.display_title,
-                    slug=info.slug,
-                    status=info.status.value if info.status else None,
-                    message_count=info.message_count,
-                    last_timestamp=info.last_timestamp,
-                    project_name=project.name,
-                    worktree_name=session.project_dir,
-                    display_name=info.display_name,
-                    is_archived=session.is_archived,
-                )
-                refreshed += 1
-            except Exception as e:
-                logger.debug("Skip indexing %s: %s", session.session_id, e)
+                if not db.needs_refresh(session.session_id, mtime):
+                    continue
 
-    db.close()
+                # Parse this session's JSONL
+                try:
+                    info = parse_session_info(session.jsonl_path)
+                    sid = info.session_id or session.session_id
+                    seen_sids.add(sid)
+                    db.upsert(
+                        session_id=sid,
+                        jsonl_path=str(session.jsonl_path),
+                        jsonl_mtime=mtime,
+                        title=info.display_title,
+                        slug=info.slug,
+                        status=info.status.value if info.status else None,
+                        message_count=info.message_count,
+                        last_timestamp=info.last_timestamp,
+                        project_name=project.name,
+                        worktree_name=session.project_dir,
+                        display_name=info.display_name,
+                        is_archived=session.is_archived,
+                    )
+                    refreshed += 1
+                except Exception as e:
+                    logger.debug("Skip indexing %s: %s", session.session_id, e)
+
+        # H-4: Clean up stale entries for deleted/moved sessions
+        indexed = db.list_all()
+        for row in indexed:
+            if row["session_id"] not in seen_sids:
+                db.delete(row["session_id"])
+
     return refreshed

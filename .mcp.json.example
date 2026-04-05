@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "ccsm": {
+      "type": "stdio",
+      "command": "python3",
+      "args": ["-m", "ccsm.mcp.server"],
+      "env": {
+        "PYTHONPATH": "/path/to/ccsm"
+      }
+    }
+  }
+}

@@ -266,11 +266,14 @@ def _summary_to_dict(summary: SessionSummary) -> dict:
         "breakpoint": breakpoint_data,
         "generated_at": _dt_to_iso(summary.generated_at),
         "model": summary.model,
-        # Phase 2: AI Digest + Facts
+        # Phase 2: AI Digest + Facts (C-1 fix: include decisions + todo)
         "digest": {
-            "goal": summary.digest.goal,
             "progress": summary.digest.progress,
             "breakpoint": summary.digest.breakpoint,
+            "decisions": summary.digest.decisions,
+            "todo": summary.digest.todo,
+            # Legacy fields for backward compat
+            "goal": summary.digest.goal,
             "next_steps": summary.digest.next_steps,
             "blocker": summary.digest.blocker,
         } if summary.digest else None,
@@ -313,13 +316,16 @@ def _dict_to_summary(d: dict) -> SessionSummary:
         )
 
     # Parse digest (Phase 2: backward-compatible — old files lack this key)
+    # C-1 fix: read decisions + todo; fall back to legacy fields for old files
     digest = None
     digest_data = d.get("digest")
     if digest_data and isinstance(digest_data, dict):
         digest = SessionDigest(
-            goal=digest_data.get("goal", ""),
             progress=digest_data.get("progress", ""),
             breakpoint=digest_data.get("breakpoint", ""),
+            decisions=digest_data.get("decisions", []),
+            todo=digest_data.get("todo", digest_data.get("next_steps", [])),
+            goal=digest_data.get("goal", ""),
             next_steps=digest_data.get("next_steps", []),
             blocker=digest_data.get("blocker"),
         )

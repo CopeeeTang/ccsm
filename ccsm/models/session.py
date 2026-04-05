@@ -148,14 +148,14 @@ class SessionInfo:
     def display_title(self) -> str:
         """Best available title for display.
 
-        Priority: display_name > custom_title > ai_title_from_cc
-        > slug > session_id prefix.
+        Priority: display_name (if meaningful) > custom_title > ai_title_from_cc
+        > slug (if meaningful) > session_id prefix.
 
-        Shows the original title as-is. Filtering/AI-replacement logic is
-        handled separately in the TUI batch enrichment layer.
+        M-1 fix: skip slash commands (/resume, /clear) — they're not real titles.
+        M-2 fix: skip 3-word random slugs (calm-tiger-moon) — auto-generated noise.
         """
-        # display_name from history.jsonl — always show if present
-        if self.display_name:
+        # display_name from history.jsonl — skip slash commands
+        if self.display_name and not self.display_name.strip().startswith("/"):
             return self.display_name
         # custom_title set by user in JSONL
         if self.custom_title:
@@ -163,9 +163,11 @@ class SessionInfo:
         # AI-generated title from Claude Code JSONL
         if self.ai_title_from_cc:
             return self.ai_title_from_cc
-        # Slug
+        # Slug — skip if it looks like a generic 3-word slug
         if self.slug:
-            return self.slug
+            parts = self.slug.split("-")
+            if not (len(parts) == 3 and all(p.isalpha() for p in parts)):
+                return self.slug
         return self.session_id[:8]
 
 
