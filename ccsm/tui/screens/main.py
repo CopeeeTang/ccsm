@@ -12,6 +12,7 @@ This is the primary screen of the CCSM TUI. It:
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -51,6 +52,36 @@ from ccsm.tui.widgets.worktree_tree import WorktreeTree
 
 logger = logging.getLogger(__name__)
 
+
+class _DebounceTimer:
+    """Thread-safe debounce timer for search queries.
+
+    Cancels previous pending callback and reschedules on each call.
+    """
+
+    def __init__(self, delay: float, callback):
+        self._delay = delay
+        self._callback = callback
+        self._timer: threading.Timer | None = None
+        self._lock = threading.Lock()
+
+    def schedule(self, query: str) -> None:
+        """Schedule callback after delay, cancelling any pending call."""
+        with self._lock:
+            if self._timer is not None:
+                self._timer.cancel()
+            self._timer = threading.Timer(
+                self._delay, self._callback, args=(query,)
+            )
+            self._timer.daemon = True
+            self._timer.start()
+
+    def cancel(self) -> None:
+        """Cancel pending callback."""
+        with self._lock:
+            if self._timer is not None:
+                self._timer.cancel()
+                self._timer = None
 
 
 def _is_meaningless_title(title: str) -> bool:
@@ -123,6 +154,10 @@ class MainScreen(Screen):
         self._workflow_cluster: Optional[WorkflowCluster] = None  # v2: workflow data
         self._ai_cluster_timer = None  # Timer for background AI clustering
         self._drawer: Optional[SessionDetailDrawer] = None  # Active drawer
+        self._search_debounce = _DebounceTimer(
+            delay=0.2,
+            callback=self._execute_search_in_thread,
+        )
 
     def compose(self) -> ComposeResult:
         yield Static("⬡ CCSM — Claude Code Session Manager", id="header-bar")
@@ -732,19 +767,27 @@ class MainScreen(Screen):
             search_input.focus()
 
     def on_input_changed(self, event: Input.Changed) -> None:
-        """Filter session list as user types in search input."""
+        """Filter session list as user types in search input (debounced)."""
         if event.input.id != "search-input":
             return
         query = event.value.strip()
         if not query:
+            # Empty query: show full list immediately (no debounce)
             self._update_session_list()
             return
+        # Debounced: schedule search with 200ms delay
+        self._search_debounce.schedule(query)
 
-        # Use index for full-text search (pain point #4)
+    def _execute_search_in_thread(self, query: str) -> None:
+        """Execute search off the UI thread and update results."""
         results = self._session_index.search(query)
-        matched_ids = {r.session_id for r in results}
+        matched_ids = {e.session_id for e in results}
         filtered = [s for s in self._current_sessions if s.session_id in matched_ids]
+        # Update UI from the timer thread
+        self.app.call_from_thread(self._display_search_results, filtered, query)
 
+    def _display_search_results(self, filtered: list, query: str) -> None:
+        """Update session list with search results (UI thread)."""
         panel = self.query_one(SessionListPanel)
         panel.load_sessions(
             filtered,

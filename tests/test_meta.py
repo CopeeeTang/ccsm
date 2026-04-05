@@ -340,3 +340,19 @@ def test_workflow_cache_missing(tmp_path, monkeypatch):
 
     result = m.load_workflows("GUI", "nonexistent")
     assert result is None
+
+
+def test_ccsm_dir_permissions(tmp_path, monkeypatch):
+    """~/.ccsm directory should have 0o700 permissions."""
+    import os
+    import stat
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    import importlib
+    from ccsm.core import meta as m
+    importlib.reload(m)
+
+    ccsm_dir = m.get_ccsm_dir()
+    mode = stat.S_IMODE(os.stat(ccsm_dir).st_mode)
+    assert mode == 0o700, f"Expected 0o700, got {oct(mode)}"

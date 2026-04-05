@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Optional
 
 from ccsm.core.i18n import get_prompts
-from ccsm.core.meta import load_summary, save_summary
+from ccsm.core.meta import get_ccsm_dir, is_summary_stale, load_summary, save_summary
 from ccsm.core.milestones import extract_breakpoint, extract_milestones
 from ccsm.core.parser import parse_session_messages
 from ccsm.models.session import (
@@ -305,7 +305,12 @@ def summarize_session(
     if not force:
         cached = load_summary(session_id)
         if cached and cached.milestones and cached.mode == mode:
-            return cached
+            # Check if cached summary is stale (JSONL updated after summary)
+            summary_path = get_ccsm_dir() / "summaries" / f"{session_id}.summary.json"
+            if is_summary_stale(summary_path, jsonl_path):
+                logger.info("Summary stale for %s, regenerating", session_id)
+            else:
+                return cached
 
     # Parse all messages
     messages = parse_session_messages(jsonl_path)
