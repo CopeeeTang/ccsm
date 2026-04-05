@@ -182,6 +182,19 @@ Screen {
     width: 100%;
 }
 
+/* Flattened card lines (replaces multi-widget title/intent rows) */
+.card-title-line {
+    width: 1fr;
+    height: 1;
+    content-align: left middle;
+}
+
+.card-intent-line {
+    width: 1fr;
+    height: 1;
+    content-align: left middle;
+}
+
 .card-intent {
     width: 1fr;
     height: 1;
@@ -833,7 +846,9 @@ SessionDetailDrawer {
 
 /* Hide intent for deep history for density */
 .history-step-2 .card-row-intent,
-.history-step-3 .card-row-intent {
+.history-step-3 .card-row-intent,
+.history-step-2 .card-intent-line,
+.history-step-3 .card-intent-line {
     display: none;
 }
 
@@ -852,4 +867,15 @@ SessionDetailDrawer {
 
 .card-spine-graph {
     display: none;
+}
+
+/* ── Lazy load hint ──────────────────────────────────────────────────── */
+
+.lazy-load-hint {
+    width: 1fr;
+    height: 1;
+    text-align: center;
+    color: #78716c;
+    background: #1e1d1c;
+    padding: 0 1;
 }

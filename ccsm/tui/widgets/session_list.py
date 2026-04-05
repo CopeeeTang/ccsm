@@ -87,6 +87,31 @@ def _format_date_divider(dt: datetime) -> str:
     return f"{d.strftime('%Y-%m-%d')} {day_names[d.weekday()]}"
 
 
+# ── Batch rendering constants ────────────────────────────────────────────
+
+INITIAL_BATCH_SIZE = 30   # Cards rendered on first load
+LAZY_BATCH_SIZE = 20      # Cards appended per scroll-to-bottom event
+
+
+def _prepare_render_batches(
+    sessions: list,
+    initial_size: int = INITIAL_BATCH_SIZE,
+) -> tuple[list, list]:
+    """Split a session list into initial + remaining batches.
+
+    The initial batch is rendered immediately; remaining batches
+    are appended lazily when the user scrolls to the bottom.
+
+    Args:
+        sessions: Full sorted list of sessions to display.
+        initial_size: Number of sessions in the first batch.
+
+    Returns:
+        (initial_batch, remaining) — both preserving original order.
+    """
+    return sessions[:initial_size], sessions[initial_size:]
+
+
 def _build_lineage_trees(
     sessions: list[SessionInfo],
     lineage_types: dict[str, str],
@@ -275,6 +300,11 @@ class SessionListPanel(VerticalScroll):
         self._selected_id: str | None = None
         self._active_filter: Optional[Status] = None  # None = ALL
         self._filter_bar: FilterBar | None = None
+        # Batch rendering state
+        self._pending_trees: list[list[SessionInfo]] = []
+        self._rendered_count: int = 0
+        self._is_loading_more: bool = False
+        self._fork_parents: set[str] = set()
 
     def load_sessions(
         self,
@@ -312,12 +342,12 @@ class SessionListPanel(VerticalScroll):
         return counts
 
     def _rebuild(self) -> None:
-        """Clear and rebuild: filter bar + session cards."""
+        """Clear and rebuild: filter bar + initial batch of session cards."""
         self.remove_children()
+        self._rendered_count = 0
+        self._pending_trees = []
 
         counts = self._count_by_status()
-
-        # Mount filter bar
         self._filter_bar = FilterBar(classes="status-tab-bar")
         self.mount(self._filter_bar)
         self._filter_bar.update_state(counts, self._active_filter)
@@ -325,21 +355,20 @@ class SessionListPanel(VerticalScroll):
         self._rebuild_list()
 
     def _rebuild_list(self) -> None:
-        """Render session cards grouped by lineage tree."""
-        # Filter sessions by active filter
+        """Render session cards in batches, grouped by lineage tree."""
+        # ── Filter ──
         if self._active_filter is not None:
             filtered = [
                 s for s in self._sessions
                 if s.status == self._active_filter
             ]
         else:
-            # ALL: show everything except NOISE (unless toggled)
             filtered = [
                 s for s in self._sessions
                 if s.status != Status.NOISE or self._show_noise
             ]
 
-        # Sort: running first → last_timestamp desc (pure time order)
+        # ── Sort ──
         def _sort_key(s: SessionInfo) -> tuple:
             ts = s.last_timestamp
             ts_val = ts.timestamp() if ts else 0
@@ -347,18 +376,17 @@ class SessionListPanel(VerticalScroll):
 
         filtered.sort(key=_sort_key)
 
-        # Identify Fork Points (sessions that have at least one child of type 'fork')
+        # ── Fork parents ──
         fork_parents: set[str] = set()
         filtered_ids = {s.session_id for s in filtered}
         if self._lineage_graph:
             for sid, node in self._lineage_graph.items():
-                if sid in filtered_ids:
-                    # If any child of this node is a 'fork' in lineage_types, this is a fork point
-                    if node.children:
-                        for child_sid in node.children:
-                            if self._lineage_types.get(child_sid) == "fork":
-                                fork_parents.add(sid)
-                                break
+                if sid in filtered_ids and node.children:
+                    for child_sid in node.children:
+                        if self._lineage_types.get(child_sid) == "fork":
+                            fork_parents.add(sid)
+                            break
+        self._fork_parents = fork_parents
 
         if not filtered:
             label = self._active_filter.value if self._active_filter else "matching"
@@ -370,15 +398,35 @@ class SessionListPanel(VerticalScroll):
             )
             return
 
-        # Build lineage trees for grouped display
-        trees = _build_lineage_trees(filtered, self._lineage_types, self._lineage_graph)
+        # ── Build all lineage trees ──
+        all_trees = _build_lineage_trees(filtered, self._lineage_types, self._lineage_graph)
 
-        # Track dates for date dividers
+        # ── Split into initial + pending batches ──
+        initial_trees, remaining_trees = _prepare_render_batches(
+            all_trees, initial_size=INITIAL_BATCH_SIZE,
+        )
+        self._pending_trees = remaining_trees
+        self._rendered_count = len(initial_trees)
+
+        # ── Mount initial batch ──
+        self._mount_tree_batch(initial_trees)
+
+        # ── Show "loading more" indicator if there are pending trees ──
+        if remaining_trees:
+            self.mount(
+                Static(
+                    f"[#78716c]  ↓ 滚动加载更多 ({len(remaining_trees)} 组) …[/]",
+                    classes="lazy-load-hint",
+                    id="lazy-load-hint",
+                )
+            )
+
+    def _mount_tree_batch(self, trees: list[list[SessionInfo]]) -> None:
+        """Mount a batch of lineage trees as session cards."""
         prev_date = None
 
         for tree in trees:
-            # Use the newest session's date for the divider
-            newest = tree[-1]  # tree sorted ascending, last = newest
+            newest = tree[-1]
             if newest.last_timestamp:
                 ts = newest.last_timestamp
                 if ts.tzinfo is None:
@@ -392,7 +440,6 @@ class SessionListPanel(VerticalScroll):
                 self.mount(DateDivider(label, classes="date-divider"))
                 prev_date = tree_date
 
-            # Single-session trees: render as plain card (no group overhead)
             if len(tree) == 1:
                 s = tree[0]
                 meta = self._all_meta.get(s.session_id)
@@ -409,7 +456,7 @@ class SessionListPanel(VerticalScroll):
                 card = SessionCard(
                     s, meta=meta, last_thought=thought,
                     lineage_type=ltype,
-                    is_fork_point=(s.session_id in fork_parents),
+                    is_fork_point=(s.session_id in self._fork_parents),
                     spine_time=time_label,
                     spine_graph="━●",
                 )
@@ -417,16 +464,54 @@ class SessionListPanel(VerticalScroll):
                     card.selected = True
                 self.mount(card)
             else:
-                # Multi-session tree: use LineageGroup
                 group = LineageGroup(
                     tree_sessions=tree,
                     lineage_types=self._lineage_types,
                     all_meta=self._all_meta,
                     last_thoughts=self._last_thoughts,
-                    fork_parents=fork_parents,
+                    fork_parents=self._fork_parents,
                     selected_id=self._selected_id,
                 )
                 self.mount(group)
+
+    def _load_next_batch(self) -> None:
+        """Append the next batch of trees when user scrolls near bottom."""
+        if not self._pending_trees or self._is_loading_more:
+            return
+
+        self._is_loading_more = True
+
+        # Remove the hint widget
+        try:
+            hint = self.query_one("#lazy-load-hint")
+            hint.remove()
+        except Exception:
+            pass
+
+        # Take next batch
+        batch = self._pending_trees[:LAZY_BATCH_SIZE]
+        self._pending_trees = self._pending_trees[LAZY_BATCH_SIZE:]
+        self._rendered_count += len(batch)
+
+        self._mount_tree_batch(batch)
+
+        # Re-add hint if more pending
+        if self._pending_trees:
+            self.mount(
+                Static(
+                    f"[#78716c]  ↓ 滚动加载更多 ({len(self._pending_trees)} 组) …[/]",
+                    classes="lazy-load-hint",
+                    id="lazy-load-hint",
+                )
+            )
+
+        self._is_loading_more = False
+
+    def on_scroll_down(self) -> None:
+        """Textual scroll event — load more cards when near bottom."""
+        # Check if we're near the bottom (within 5 lines)
+        if self.scroll_offset.y + self.size.height >= self.virtual_size.height - 5:
+            self._load_next_batch()
 
     def toggle_noise(self) -> None:
         """Toggle visibility of NOISE sessions."""
