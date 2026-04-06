@@ -505,8 +505,23 @@ SessionDetailDrawer {
     height: auto;
 }
 
-/* ── Chat Bubble (Last Exchange) ──────────────────────────────────────── */
+/* ── Chat Style (Last Exchange — Brief UI aligned) ──────────────────── */
 
+.det-chat-label {
+    height: 1;
+    margin: 1 0 0 0;
+    padding: 0;
+}
+
+.det-chat-text {
+    height: auto;
+    max-height: 15;
+    margin: 0 0 0 0;
+    padding: 0 0 0 2;
+    overflow-y: auto;
+}
+
+/* Legacy chat-row/avatar styles (kept for compatibility, used nowhere now) */
 .det-chat-row {
     height: auto;
     margin: 0 0 1 0;
@@ -730,6 +745,11 @@ SessionDetailDrawer {
 .-light-theme .det-chat-msg { background: #faf9f5; border: round #e6e4df; }
 .-light-theme .det-chat-avatar { color: #141413; }
 .-light-theme .det-chat-avatar-user { color: #141413; }
+
+/* Brief chat-style light overrides */
+.-light-theme .det-chat-text {
+    color: #44403c;
+}
 
 .-light-theme #header-bar { background: #faf9f5; color: #c97040; }
 .-light-theme #footer-bar { background: #faf9f5; color: #5e5c54; }
