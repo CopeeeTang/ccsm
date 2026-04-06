@@ -111,6 +111,18 @@ Screen {
     border-left: tall #d97757;
 }
 
+/* ── Skeleton Card (loading shimmer placeholder) ────────────────── */
+
+.session-card.-loading {
+    height: 4;
+    max-height: 4;
+}
+
+.card-skeleton-line {
+    color: #3a3835;
+    text-opacity: 60%;
+}
+
 /* Spine gutter: fixed-width time + graph connector */
 .card-spine {
     width: 8;
