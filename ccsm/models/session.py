@@ -488,6 +488,22 @@ class CompactSummaryParsed:
 
 
 @dataclass
+class BackgroundTaskInfo:
+    """A background task or subagent detected in a session's JSONL.
+
+    Extracted from tool_use blocks of TaskCreate, TaskUpdate, TaskStop,
+    and Agent tools. Used by the Detail panel to show "what was running
+    in the background" during this session.
+    """
+
+    task_id: str                         # Task ID or agent ID
+    subject: str                         # Task title or agent description
+    status: str = "unknown"              # "pending" | "running" | "completed" | "failed" | "stopped"
+    tool_name: str = ""                  # "TaskCreate" | "TaskUpdate" | "TaskStop" | "Agent"
+    description: Optional[str] = None    # Longer description if available
+
+
+@dataclass
 class SessionDetailData:
     """Deep-parsed data for the Detail panel (loaded on demand).
 
@@ -501,5 +517,6 @@ class SessionDetailData:
     files_read: list[str] = field(default_factory=list)       # From tool_use(Read/Glob/Grep)
     searches: list[str] = field(default_factory=list)         # From tool_use(Grep/Glob) patterns
     agents_spawned: list[str] = field(default_factory=list)   # From tool_use(Agent) descriptions
+    background_tasks: list[BackgroundTaskInfo] = field(default_factory=list)  # From TaskCreate/Agent
     last_user_msg: Optional[str] = None     # Full last user message
     last_assistant_msg: Optional[str] = None  # Full last assistant message
