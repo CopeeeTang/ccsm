@@ -611,6 +611,10 @@ def parse_session_detail(jsonl_path: Path) -> SessionDetailData:
     last_user_msg: Optional[str] = None
     last_assistant_msg: Optional[str] = None
 
+    from ccsm.models.session import BackgroundTaskInfo
+    background_tasks: list[BackgroundTaskInfo] = []
+    _seen_task_ids: set[str] = set()  # Dedup by task_id
+
     session_id = jsonl_path.stem
     lines = _read_lines(jsonl_path)
 
@@ -653,6 +657,41 @@ def parse_session_detail(jsonl_path: Path) -> SessionDetailData:
                         continue
                     tool_name = block.get("name", "")
                     tool_input = block.get("input", {})
+
+                    # ── Background tasks: TaskCreate/TaskUpdate/TaskStop ──
+                    if tool_name == "TaskCreate":
+                        subject = tool_input.get("subject", "")
+                        if subject and subject not in _seen_task_ids:
+                            _seen_task_ids.add(subject)
+                            background_tasks.append(BackgroundTaskInfo(
+                                task_id=str(len(background_tasks) + 1),
+                                subject=subject[:100],
+                                status="pending",
+                                tool_name="TaskCreate",
+                                description=tool_input.get("description", "")[:200] if tool_input.get("description") else None,
+                            ))
+                        continue
+
+                    elif tool_name == "TaskUpdate":
+                        task_id = tool_input.get("taskId", "")
+                        new_status = tool_input.get("status", "")
+                        if task_id and new_status:
+                            # 更新已有任务的状态
+                            for bt in background_tasks:
+                                if bt.task_id == task_id:
+                                    bt.status = new_status
+                                    break
+                        continue
+
+                    elif tool_name == "TaskStop":
+                        task_id = tool_input.get("taskId", "")
+                        if task_id:
+                            for bt in background_tasks:
+                                if bt.task_id == task_id:
+                                    bt.status = "stopped"
+                                    break
+                        continue
+
                     summary = _summarize_tool_input(tool_name, tool_input)
                     if not summary:
                         continue
@@ -669,6 +708,18 @@ def parse_session_detail(jsonl_path: Path) -> SessionDetailData:
                     elif tool_name == "Agent":
                         if len(agents_spawned) < 10:
                             agents_spawned.append(summary)
+                        # 同时追加到 background_tasks
+                        desc = tool_input.get("description", "")
+                        agent_id = tool_input.get("name", "")
+                        if desc and desc not in _seen_task_ids:
+                            _seen_task_ids.add(desc)
+                            background_tasks.append(BackgroundTaskInfo(
+                                task_id=agent_id or f"agent-{len(background_tasks)}",
+                                subject=desc[:100],
+                                status="running",
+                                tool_name="Agent",
+                                description=tool_input.get("prompt", "")[:200] if tool_input.get("prompt") else None,
+                            ))
 
     return SessionDetailData(
         session_id=session_id,
@@ -677,6 +728,7 @@ def parse_session_detail(jsonl_path: Path) -> SessionDetailData:
         files_read=sorted(files_read),
         searches=sorted(searches),
         agents_spawned=agents_spawned,
+        background_tasks=background_tasks,
         last_user_msg=last_user_msg,
         last_assistant_msg=last_assistant_msg,
     )
