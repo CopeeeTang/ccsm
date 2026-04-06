@@ -7,7 +7,7 @@ Layout priority (top to bottom, progressive disclosure):
 4. 📝 CONTEXT SUMMARY — compact summary details (collapsible, collapsed)
 5. 📍 WHERE YOU LEFT OFF — breakpoint detail (collapsible, collapsed)
 6. 🔧 WHAT WAS DONE — tool_use operations (collapsible, collapsed)
-7. 💬 LAST EXCHANGE — last user+assistant pair (collapsible, collapsed)
+7. 💬 LAST EXCHANGE — last user+assistant pair (collapsible, expanded)
 
 Data source philosophy: mine JSONL first (zero cost), AI second (on demand).
 """
@@ -225,7 +225,7 @@ class SessionDetail(VerticalScroll):
         # ── 6.5 Background Tasks (collapsible, expanded if tasks exist) ──
         self._mount_background_tasks_section()
 
-        # ── 7. Last Exchange (collapsible, collapsed) ──────────────
+        # ── 7. Last Exchange (collapsible, expanded — high-value for recovery) ──
         self._mount_last_exchange_section()
 
     # ── SESSION IDENTITY (card style with panel border) ──────────
@@ -650,56 +650,99 @@ class SessionDetail(VerticalScroll):
 
             collapsible.mount(Static(line, classes="det-task-item"))
 
-    # ── LAST EXCHANGE (Chat bubble style) ──────────────────────
+    # ── LAST EXCHANGE (Brief UI chat-style) ──────────────────────
 
     def _mount_last_exchange_section(self) -> None:
-        """Mount last user+assistant message pair — chat bubble style."""
-        from textual.containers import Horizontal
+        """Mount last user+assistant exchange — Brief UI chat-style.
 
+        Renders as:
+          You  15:30
+            fix the bug in parser.ts
+
+          Claude  15:31
+            Fixed the bug — the issue was an off-by-one error...
+
+        Aligned with KAIROS Brief UI's "You"/"Claude" label + timestamp pattern.
+        """
         dd = self._detail_data
         has_exchange = dd and (dd.last_user_msg or dd.last_assistant_msg)
-        has_reply = bool(self._last_replies)
+        has_reply_msgs = bool(self._last_reply_msgs)
+        has_reply_str = bool(self._last_replies)
 
-        if not has_exchange and not has_reply:
+        if not has_exchange and not has_reply_msgs and not has_reply_str:
             return
 
-        collapsible = Collapsible(title="💬 LAST EXCHANGE", collapsed=True)
+        # Default EXPANDED (not collapsed) — last exchange is high-value for recovery
+        collapsible = Collapsible(title="💬 LAST EXCHANGE", collapsed=False)
         self.mount(collapsible)
 
-        V = "#e8e6dc"
-        K = "#b0aea5"
+        LABEL_YOU = "#788c5d"     # Green — matches Brief UI briefLabelYou
+        LABEL_CLAUDE = "#a78bfa"  # Purple — matches Brief UI briefLabelClaude
+        TIME_DIM = "#78716c"      # Dim gray for timestamp
+        TEXT = "#e8e6dc"           # Primary text color
+        TEXT_DIM = "#b0aea5"      # Secondary text color
 
-        # User message bubble
-        if dd and dd.last_user_msg:
-            user_text = dd.last_user_msg[:300]
-            if len(dd.last_user_msg) > 300:
+        # ── User message ──
+        user_text = None
+        user_time = ""
+
+        if self._last_reply_msgs:
+            # Find last user message from JSONLMessage list
+            for msg in reversed(self._last_reply_msgs):
+                if msg.role == "user" and msg.content:
+                    user_text = msg.content[:400]
+                    if len(msg.content) > 400:
+                        user_text += "…"
+                    user_time = _format_chat_time(msg.timestamp)
+                    break
+        if user_text is None and dd and dd.last_user_msg:
+            user_text = dd.last_user_msg[:400]
+            if len(dd.last_user_msg) > 400:
                 user_text += "…"
-            row = Horizontal(classes="det-chat-row")
-            collapsible.mount(row)
-            row.mount(Static(" YOU ", classes="det-chat-avatar det-chat-avatar-user"))
-            row.mount(Static(
-                f"[{V}]{rich_escape(user_text)}[/]",
-                classes="det-chat-msg",
+
+        if user_text:
+            time_suffix = f"  [{TIME_DIM}]{user_time}[/]" if user_time else ""
+            collapsible.mount(Static(
+                f"  [{LABEL_YOU} bold]You[/]{time_suffix}",
+                classes="det-chat-label",
+            ))
+            collapsible.mount(Static(
+                f"    [{TEXT}]{rich_escape(user_text)}[/]",
+                classes="det-chat-text",
             ))
 
-        # AI message bubble
+        # ── Claude message ──
         ai_text = None
-        if dd and dd.last_assistant_msg:
-            ai_text = dd.last_assistant_msg[:300]
-            if len(dd.last_assistant_msg) > 300:
+        ai_time = ""
+
+        if self._last_reply_msgs:
+            # Find last assistant message from JSONLMessage list
+            for msg in reversed(self._last_reply_msgs):
+                if msg.role == "assistant" and msg.content:
+                    ai_text = msg.content[:400]
+                    if len(msg.content) > 400:
+                        ai_text += "…"
+                    ai_time = _format_chat_time(msg.timestamp)
+                    break
+        if ai_text is None and dd and dd.last_assistant_msg:
+            ai_text = dd.last_assistant_msg[:400]
+            if len(dd.last_assistant_msg) > 400:
                 ai_text += "…"
-        elif self._last_replies:
-            ai_text = self._last_replies[-1][:300]
-            if len(self._last_replies[-1]) > 300:
+        elif ai_text is None and self._last_replies:
+            last = self._last_replies[-1]
+            ai_text = last[:400]
+            if len(last) > 400:
                 ai_text += "…"
 
         if ai_text:
-            row = Horizontal(classes="det-chat-row")
-            collapsible.mount(row)
-            row.mount(Static("  AI ", classes="det-chat-avatar"))
-            row.mount(Static(
-                f"[{K}]{rich_escape(ai_text)}[/]",
-                classes="det-chat-msg",
+            time_suffix = f"  [{TIME_DIM}]{ai_time}[/]" if ai_time else ""
+            collapsible.mount(Static(
+                f"  [{LABEL_CLAUDE} bold]Claude[/]{time_suffix}",
+                classes="det-chat-label",
+            ))
+            collapsible.mount(Static(
+                f"    [{TEXT_DIM}]{rich_escape(ai_text)}[/]",
+                classes="det-chat-text",
             ))
 
     # ── Workflow overview (no session selected) ──────────────────

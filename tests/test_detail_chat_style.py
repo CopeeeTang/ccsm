@@ -37,3 +37,15 @@ def test_show_session_accepts_jsonl_messages():
     assert msgs[0].role == "user"
     assert msgs[0].timestamp.hour == 15
     assert msgs[1].role == "assistant"
+
+
+def test_format_chat_timestamp():
+    """Chat timestamp should format as HH:MM."""
+    from ccsm.tui.widgets.session_detail import _format_chat_time
+    from datetime import datetime, timezone
+
+    ts = datetime(2026, 4, 6, 15, 30, 45, tzinfo=timezone.utc)
+    assert _format_chat_time(ts) == "15:30"
+
+    ts_none = None
+    assert _format_chat_time(ts_none) == ""
