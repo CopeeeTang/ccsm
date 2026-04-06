@@ -25,6 +25,7 @@ from textual.widgets import Collapsible, Markdown, Static
 from ccsm.models.session import (
     Breakpoint,
     CompactSummaryParsed,
+    JSONLMessage,
     Milestone,
     MilestoneItem,
     MilestoneStatus,
@@ -127,7 +128,8 @@ class SessionDetail(VerticalScroll):
         self._session: Optional[SessionInfo] = None
         self._meta: Optional[SessionMeta] = None
         self._summary: Optional[SessionSummary] = None
-        self._last_replies: list[str] = []
+        self._last_replies: list[str] = []          # 保留旧字段兼容
+        self._last_reply_msgs: list[JSONLMessage] = []  # 新增：完整消息对象
         self._detail_data: Optional[SessionDetailData] = None
         self._compact_parsed: Optional[CompactSummaryParsed] = None
 
@@ -136,7 +138,7 @@ class SessionDetail(VerticalScroll):
         session: SessionInfo,
         meta: Optional[SessionMeta] = None,
         summary: Optional[SessionSummary] = None,
-        last_replies: Optional[list[str]] = None,
+        last_replies: list | None = None,
         detail_data: Optional[SessionDetailData] = None,
         compact_parsed: Optional[CompactSummaryParsed] = None,
     ) -> None:
@@ -144,7 +146,16 @@ class SessionDetail(VerticalScroll):
         self._session = session
         self._meta = meta
         self._summary = summary
-        self._last_replies = last_replies or []
+        # Accept both str list (legacy) and JSONLMessage list (new)
+        self._last_replies = []
+        self._last_reply_msgs = []
+        if last_replies:
+            for item in last_replies:
+                if isinstance(item, JSONLMessage):
+                    self._last_reply_msgs.append(item)
+                    self._last_replies.append(item.content)
+                elif isinstance(item, str):
+                    self._last_replies.append(item)
         self._detail_data = detail_data
         self._compact_parsed = compact_parsed
         self._rebuild()
@@ -203,6 +214,9 @@ class SessionDetail(VerticalScroll):
 
         # ── 6. What Was Done (collapsible, collapsed) ──────────────
         self._mount_what_was_done_section()
+
+        # ── 6.5 Background Tasks (collapsible, expanded if tasks exist) ──
+        self._mount_background_tasks_section()
 
         # ── 7. Last Exchange (collapsible, collapsed) ──────────────
         self._mount_last_exchange_section()
@@ -576,6 +590,58 @@ class SessionDetail(VerticalScroll):
         collapsible = Collapsible(title="🔧 WHAT WAS DONE", collapsed=True)
         self.mount(collapsible)
         collapsible.mount(Static(body, classes="detail-section-body"))
+
+    # ── BACKGROUND TASKS (subagent/task activity) ─────────────
+
+    def _mount_background_tasks_section(self) -> None:
+        """Mount background tasks section — shows Agent/Task activity.
+
+        Displays subagents and structured tasks detected in the session,
+        aligned with KAIROS's task state tracking concept.
+        """
+        dd = self._detail_data
+        if not dd or not dd.background_tasks:
+            return
+
+        tasks = dd.background_tasks
+        has_active = any(t.status in ("running", "pending", "in_progress") for t in tasks)
+
+        # 有活跃任务时展开，否则折叠
+        collapsible = Collapsible(
+            title=f"🔄 BACKGROUND TASKS ({len(tasks)})",
+            collapsed=not has_active,
+        )
+        self.mount(collapsible)
+
+        V = "#e8e6dc"
+        K = "#b0aea5"
+
+        _STATUS_ICONS = {
+            "pending": "[#c09553]◯[/]",       # Yellow circle — waiting
+            "in_progress": "[#788c5d]●[/]",   # Green filled — active
+            "running": "[#788c5d]●[/]",       # Green filled — active
+            "completed": "[#788c5d]✓[/]",     # Green check — done
+            "failed": "[#e87b7b]✗[/]",        # Red X — failed
+            "stopped": "[#78716c]⊘[/]",       # Gray — stopped
+            "unknown": "[#78716c]?[/]",        # Gray — unknown
+        }
+
+        for task in tasks:
+            icon = _STATUS_ICONS.get(task.status, _STATUS_ICONS["unknown"])
+            tool_badge = ""
+            if task.tool_name == "Agent":
+                tool_badge = f" [#a78bfa]⚙ agent[/]"
+            elif task.tool_name == "TaskCreate":
+                tool_badge = f" [#6b99b4]📋 task[/]"
+
+            subject = rich_escape(task.subject[:80])
+            line = f"  {icon} [{V}]{subject}[/]{tool_badge}"
+
+            if task.description:
+                desc = rich_escape(task.description[:120])
+                line += f"\n    [{K}]{desc}[/]"
+
+            collapsible.mount(Static(line, classes="det-task-item"))
 
     # ── LAST EXCHANGE (Chat bubble style) ──────────────────────
 
