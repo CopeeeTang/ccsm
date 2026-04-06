@@ -150,7 +150,8 @@ class MainScreen(Screen):
         self._lineage_signals: dict[str, LineageSignals] = {}  # Pain point #1,5,7,8
         self._lineage_types: dict[str, str] = {}  # session_id → "fork"/"compact"/"duplicate"
         self._lineage_graph: dict = {}  # session_id → SessionLineage (parent/child DAG)
-        self._session_index = SessionIndex()  # Pain point #3,4
+        # Pain point #3,4: search index with disk persistence
+        self._session_index = self._load_persisted_index()
         self._workflow_cluster: Optional[WorkflowCluster] = None  # v2: workflow data
         self._ai_cluster_timer = None  # Timer for background AI clustering
         self._drawer: Optional[SessionDetailDrawer] = None  # Active drawer
@@ -158,6 +159,25 @@ class MainScreen(Screen):
             delay=0.2,
             callback=self._execute_search_in_thread,
         )
+
+    # ── Index persistence helpers ──────────────────────────────────────────
+
+    @staticmethod
+    def _index_path() -> Path:
+        """Return path for persisted search index."""
+        from ccsm.core.meta import get_ccsm_dir
+        return get_ccsm_dir() / "search_index.json"
+
+    @staticmethod
+    def _load_persisted_index() -> SessionIndex:
+        """Load search index from disk if available, else return empty."""
+        try:
+            p = MainScreen._index_path()
+            if p.exists():
+                return SessionIndex.load(p)
+        except Exception:
+            pass
+        return SessionIndex()
 
     def compose(self) -> ComposeResult:
         yield Static("⬡ CCSM — Claude Code Session Manager", id="header-bar")
@@ -193,17 +213,24 @@ class MainScreen(Screen):
 
         Strategy: discover projects/worktrees immediately for the tree view.
         Session JSONL parsing is deferred until a worktree is selected.
+        Steps 2-4 (running sessions, display names, metadata) are independent
+        and run in parallel via ThreadPoolExecutor.
         """
         try:
+            from concurrent.futures import ThreadPoolExecutor
+
             # Step 1: Discover projects & worktrees (fast — filesystem only)
             projects = discover_projects()
 
-            # Step 2: Load running sessions & display names (fast — small files)
-            running = load_running_sessions()
-            display_names = load_display_names()
+            # Steps 2-4: independent I/O — run in parallel
+            with ThreadPoolExecutor(max_workers=3) as pool:
+                fut_running = pool.submit(load_running_sessions)
+                fut_names = pool.submit(load_display_names)
+                fut_meta = pool.submit(load_all_meta)
 
-            # Step 3: Load all metadata (fast — small JSON files)
-            all_meta = load_all_meta()
+                running = fut_running.result()
+                display_names = fut_names.result()
+                all_meta = fut_meta.result()
 
             # Step 4: Enrich sessions with display_name and running state
             # (no JSONL parsing — just matching by session_id)
@@ -298,6 +325,10 @@ class MainScreen(Screen):
         self, event: WorktreeTree.WorktreeSelected
     ) -> None:
         """Parse and display sessions for the selected worktree."""
+        # Show skeleton loading state immediately
+        panel = self.query_one(SessionListPanel)
+        panel.show_loading()
+
         self._load_worktree_sessions(event.worktree, event.project)
 
     def on_worktree_tree_project_selected(
@@ -420,6 +451,12 @@ class MainScreen(Screen):
                     tags=meta.tags if meta else [],
                 ))
             self._session_index.update_entries(index_entries)
+
+            # Persist index for faster subsequent loads
+            try:
+                self._session_index.save(self._index_path())
+            except Exception:
+                pass  # Non-critical — index is regenerable
 
             # ── Build workflow cluster from lineage (v2) ──
             from ccsm.core.lineage import build_lineage_graph
@@ -559,7 +596,7 @@ class MainScreen(Screen):
                 last_msgs = cached_msgs[-3:]
             else:
                 last_msgs = get_last_assistant_messages(session.jsonl_path, count=3)
-            replies = [m.content for m in last_msgs if m.content]
+            replies = [m for m in last_msgs if m.content]  # Pass full JSONLMessage objects
 
             # Use summarizer: checks cache first, then extracts milestones
             summary = summarize_session(
@@ -595,7 +632,7 @@ class MainScreen(Screen):
         session: SessionInfo,
         meta,
         summary,
-        replies: list[str],
+        replies: list,
         detail_data=None,
         compact_parsed=None,
     ) -> None:
@@ -616,21 +653,22 @@ class MainScreen(Screen):
     def action_resume_session(self) -> None:
         """Resume the selected session via claude --resume.
 
-        Uses the JSONL file path instead of session_id to ensure cross-worktree
-        resume works correctly. Claude Code resolves session_id by cwd, but
-        the JSONL path works regardless of current working directory.
+        Passes a structured descriptor to app.exit() containing:
+        - session_id: UUID for ``claude --resume <id>``
+        - project_dir: cwd to launch claude in (ensures workspace trust)
+        - jsonl_path: fallback for cross-worktree resume
         """
         if self._selected_session is None:
             self.notify("No session selected", severity="warning")
             return
 
         session = self._selected_session
-        # Use jsonl_path for reliable cross-worktree resume
-        if session.jsonl_path and session.jsonl_path.exists():
-            self.app.exit(result=str(session.jsonl_path))
-        else:
-            # Fallback to session_id (same-project resume)
-            self.app.exit(result=session.session_id)
+        self.app.exit(result={
+            "action": "resume",
+            "session_id": session.session_id,
+            "project_dir": session.project_dir,
+            "jsonl_path": str(session.jsonl_path) if session.jsonl_path else None,
+        })
 
     def action_toggle_noise(self) -> None:
         """Toggle NOISE session visibility."""
@@ -725,7 +763,7 @@ class MainScreen(Screen):
             ):
                 meta = load_meta(session.session_id)
                 last_msgs = get_last_assistant_messages(session.jsonl_path, count=3)
-                replies = [m.content for m in last_msgs if m.content]
+                replies = [m for m in last_msgs if m.content]  # Pass full JSONLMessage objects
 
                 # Re-parse compact and detail data so LLM refresh doesn't lose them
                 compact_parsed = None

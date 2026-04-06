@@ -306,6 +306,25 @@ class SessionListPanel(VerticalScroll):
         self._is_loading_more: bool = False
         self._fork_parents: set[str] = set()
 
+    def show_loading(self, count: int = 8) -> None:
+        """Show skeleton placeholder cards while data is loading.
+
+        Called by main.py when a worktree is selected, before
+        _parse_and_display() completes.
+        """
+        self.remove_children()
+        self._rendered_count = 0
+        self._pending_trees = []
+
+        # Mount filter bar placeholder (empty counts)
+        self._filter_bar = FilterBar(classes="status-tab-bar")
+        self.mount(self._filter_bar)
+        self._filter_bar.update_state({s: 0 for s in _STATUS_ORDER}, None)
+
+        # Mount skeleton cards
+        for _ in range(count):
+            self.mount(SessionCard.skeleton())
+
     def load_sessions(
         self,
         sessions: list[SessionInfo],
