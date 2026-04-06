@@ -104,6 +104,13 @@ def _strip_emoji_prefix(label: str) -> str:
     return stripped.strip() or label
 
 
+def _format_chat_time(dt: Optional[datetime]) -> str:
+    """Format datetime as HH:MM for chat-style labels."""
+    if dt is None:
+        return ""
+    return dt.strftime("%H:%M")
+
+
 def _clean_intent_text(text: str) -> str:
     """Clean numbered/listed text into concise intent form.
 

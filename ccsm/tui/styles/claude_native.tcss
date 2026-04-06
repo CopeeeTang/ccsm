@@ -537,6 +537,14 @@ SessionDetailDrawer {
     overflow-y: auto;
 }
 
+/* ── Background Tasks ───────────────────────────────────────────────── */
+
+.det-task-item {
+    height: auto;
+    margin: 0 0 0 0;
+    padding: 0;
+}
+
 /* ── Focus Indicators ───────────────────────────────────────────────────── */
 
 #worktree-panel:focus-within {
