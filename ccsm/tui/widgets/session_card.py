@@ -101,6 +101,7 @@ class SessionCard(Widget):
     """A compact card representing a single session — compose-based layout."""
 
     selected = reactive(False)
+    loading = reactive(False)
 
     class CardSelected(Message):
         """Emitted when a card is clicked."""
@@ -128,13 +129,46 @@ class SessionCard(Widget):
         self._spine_time = spine_time
         self._spine_graph = spine_graph
 
+    @classmethod
+    def skeleton(cls) -> "SessionCard":
+        """Create a skeleton/shimmer placeholder card.
+
+        Used as visual placeholder while JSONL data is loading.
+        Renders gray blocks instead of real content.
+        """
+        from pathlib import Path
+
+        placeholder = SessionInfo(
+            session_id="__skeleton__",
+            project_dir="",
+            jsonl_path=Path("/dev/null"),
+            message_count=0,
+            status=Status.DONE,
+        )
+        card = cls(placeholder)
+        card.loading = True
+        return card
+
     def compose(self) -> ComposeResult:
         """Build card layout — optimized flat structure.
 
-        Previous: 4 layers of nesting (Vertical→Vertical→Horizontal→Static×6)
-        Now: Vertical(spine) + Vertical(body with 2 Static lines)
-        Reduces widget count per card from ~10 to ~4.
+        When self.loading is True, renders gray placeholder blocks
+        (skeleton shimmer) instead of real content.
         """
+        # ── Skeleton mode ──
+        if self.loading:
+            with Vertical(classes="card-body"):
+                yield Static(
+                    "[#3a3835]━━━━━━━━━━━━━━━━━━━━━━━━━━[/]  [#3a3835]━━━━[/]",
+                    classes="card-title-line card-skeleton-line",
+                )
+                yield Static(
+                    "[#3a3835]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[/]",
+                    classes="card-intent-line card-skeleton-line",
+                )
+            return
+
+        # ── Normal rendering (existing code below) ──
         s = self.session
 
         # ── Spine gutter ──
@@ -230,6 +264,9 @@ class SessionCard(Widget):
 
     def watch_selected(self, value: bool) -> None:
         self.set_class(value, "-selected")
+
+    def watch_loading(self, value: bool) -> None:
+        self.set_class(value, "-loading")
 
     def on_mount(self) -> None:
         self.add_class("session-card")
