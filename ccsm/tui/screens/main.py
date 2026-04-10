@@ -48,6 +48,7 @@ from ccsm.models.session import Project, SessionInfo, SessionMeta, Status, Workf
 from ccsm.tui.screens.drawer import SessionDetailDrawer
 from ccsm.tui.widgets.session_detail import SessionDetail
 from ccsm.tui.widgets.session_list import SessionListPanel
+from ccsm.tui.widgets.swimlane import Swimlane
 from ccsm.tui.widgets.worktree_tree import WorktreeTree
 
 logger = logging.getLogger(__name__)
@@ -131,6 +132,7 @@ class MainScreen(Screen):
         ("3", "switch_tab_3", "Idea"),
         ("4", "switch_tab_4", "Done"),
         ("0", "switch_tab_all", "All"),
+        ("g", "toggle_graph", "Graph"),
         ("D", "batch_archive", "Archive"),
     ]
 
@@ -159,6 +161,7 @@ class MainScreen(Screen):
             delay=0.2,
             callback=self._execute_search_in_thread,
         )
+        self._graph_mode: bool = False
 
     # ── Index persistence helpers ──────────────────────────────────────────
 
@@ -195,9 +198,10 @@ class MainScreen(Screen):
                     classes="search-input -hidden",
                 )
                 yield SessionListPanel()
+                yield Swimlane(id="session-graph")
         yield Static(
             " [#d97757]↑↓[/] Navigate  "
-            "[#d97757]0-4[/] Filter  [#d97757]/[/] Search  "
+            "[#d97757]0-4[/] Filter  [#d97757]/[/] Search  [#d97757]g[/] Graph  "
             "[#d97757]Enter[/] Detail  [#d97757]r[/] Resume  [#d97757]s[/] AI  "
             "[#d97757]D[/] Archive  [#d97757]q[/] Quit",
             id="footer-bar",
@@ -205,6 +209,8 @@ class MainScreen(Screen):
 
     def on_mount(self) -> None:
         """Start loading data after mount."""
+        graph = self.query_one(Swimlane)
+        graph.display = False
         self._load_data()
 
     @work(thread=True)
@@ -318,6 +324,46 @@ class MainScreen(Screen):
             lineage_types=self._lineage_types,
             lineage_graph=self._lineage_graph,
         )
+
+    def _session_statuses(self) -> dict[str, Status]:
+        """Return current status map for workflow rendering."""
+        return {
+            session.session_id: session.status
+            for session in self._current_sessions
+            if session.status is not None
+        }
+
+    def _update_workflow_view(self) -> None:
+        """Refresh the workflow swimlane with the current cluster."""
+        swimlane = self.query_one(Swimlane)
+        cluster = self._workflow_cluster
+        if cluster is None:
+            return
+        swimlane.set_data(
+            cluster,
+            statuses=self._session_statuses(),
+            current_session_id=(
+                self._selected_session.session_id
+                if self._selected_session is not None
+                else None
+            ),
+            compact=True,
+        )
+
+    def _set_graph_mode(self, enabled: bool) -> None:
+        """Show either the session list or the workflow graph."""
+        panel = self.query_one(SessionListPanel)
+        swimlane = self.query_one(Swimlane)
+
+        self._graph_mode = enabled
+        panel.display = not enabled
+        swimlane.display = enabled
+
+        if enabled:
+            self._update_workflow_view()
+            swimlane.focus()
+        else:
+            panel.focus()
 
     # ── Worktree selection ──────────────────────────────────────────────────
 
@@ -528,7 +574,10 @@ class MainScreen(Screen):
         title = self.query_one("#session-panel .panel-title", Static)
         title.update(f" SESSIONS · {label}")
 
-        self._update_session_list()
+        if self._graph_mode:
+            self._update_workflow_view()
+        else:
+            self._update_session_list()
 
         # Schedule silent AI naming after 2s (non-blocking)
         if self._ai_cluster_timer:
@@ -575,6 +624,17 @@ class MainScreen(Screen):
                 1.5,
                 lambda: self._try_silent_summary(session),
             )
+
+    def on_swimlane_workflow_selected(
+        self, event: Swimlane.WorkflowSelected
+    ) -> None:
+        """Open workflow detail from the swimlane graph."""
+        self._drawer = SessionDetailDrawer()
+        self.app.push_screen(self._drawer)
+        self._drawer.show_workflow_detail(
+            event.workflow,
+            session_statuses=self._session_statuses(),
+        )
 
     @work(thread=True)
     def _load_session_detail(self, session: SessionInfo) -> None:
@@ -915,6 +975,21 @@ class MainScreen(Screen):
         """Switch to ALL filter (show all statuses)."""
         panel = self.query_one(SessionListPanel)
         panel.set_filter_all()
+
+    def action_toggle_graph(self) -> None:
+        """Toggle between the session list and workflow graph view."""
+        has_workflows = (
+            self._workflow_cluster is not None
+            and bool(self._workflow_cluster.workflows)
+        )
+        if not self._graph_mode and not has_workflows:
+            self.notify("No workflow graph available", severity="warning")
+            return
+
+        if self._search_active:
+            self.action_search()
+
+        self._set_graph_mode(not self._graph_mode)
 
     # ── Batch operations ───────────────────────────────────────────────
 

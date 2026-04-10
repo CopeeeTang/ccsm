@@ -306,6 +306,84 @@ class SessionListPanel(VerticalScroll):
         self._is_loading_more: bool = False
         self._fork_parents: set[str] = set()
 
+    def _ordered_cards(self) -> list[SessionCard]:
+        """Return rendered cards in the same order as the UI."""
+        return list(self.query(SessionCard))
+
+    def _select_card_at(self, index: int) -> None:
+        """Select card at a rendered index and keep it visible."""
+        cards = self._ordered_cards()
+        if not cards:
+            self._selected_id = None
+            return
+
+        index = max(0, min(index, len(cards) - 1))
+        card = cards[index]
+        self.select_session(card.session.session_id)
+
+        try:
+            self.scroll_to_widget(card, animate=False)
+        except Exception:
+            pass
+
+    def _move_selection(self, delta: int) -> None:
+        """Move the keyboard selection by one rendered card."""
+        cards = self._ordered_cards()
+        if not cards:
+            return
+
+        if self._selected_id is None:
+            index = 0 if delta >= 0 else len(cards) - 1
+            self._select_card_at(index)
+            return
+
+        current_index = next(
+            (
+                i for i, card in enumerate(cards)
+                if card.session.session_id == self._selected_id
+            ),
+            None,
+        )
+        if current_index is None:
+            self._select_card_at(0)
+            return
+
+        next_index = current_index + delta
+        if next_index >= len(cards) and self._pending_trees:
+            self._load_next_batch()
+            cards = self._ordered_cards()
+
+        self._select_card_at(next_index)
+
+    def _open_selected_session(self) -> None:
+        """Bubble the currently selected session upward."""
+        if self._selected_id is None:
+            self._move_selection(1)
+        if self._selected_id is None:
+            return
+
+        for card in self._ordered_cards():
+            if card.session.session_id == self._selected_id:
+                self.post_message(self.SessionSelected(card.session))
+                return
+
+    def on_focus(self) -> None:
+        """Ensure keyboard users always land on a concrete selection."""
+        if self._selected_id is None and self._ordered_cards():
+            self._select_card_at(0)
+
+    def key_down(self) -> None:
+        """Select the next rendered session card."""
+        self._move_selection(1)
+
+    def key_up(self) -> None:
+        """Select the previous rendered session card."""
+        self._move_selection(-1)
+
+    def key_enter(self) -> None:
+        """Open the currently selected session."""
+        self._open_selected_session()
+
     def show_loading(self, count: int = 8) -> None:
         """Show skeleton placeholder cards while data is loading.
 
@@ -372,6 +450,14 @@ class SessionListPanel(VerticalScroll):
         self._filter_bar.update_state(counts, self._active_filter)
 
         self._rebuild_list()
+
+        cards = self._ordered_cards()
+        if not cards:
+            self._selected_id = None
+        elif self._selected_id not in {card.session.session_id for card in cards}:
+            self._selected_id = None
+            if self.has_focus:
+                self._select_card_at(0)
 
     def _rebuild_list(self) -> None:
         """Render session cards in batches, grouped by lineage tree."""
