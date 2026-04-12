@@ -188,11 +188,18 @@ def _read_tail_lines(path: Path, n: int = 50) -> list[str]:
 # ─── Public API ──────────────────────────────────────────────────────────────
 
 
-def _parse_session_info_from_lines(jsonl_path: Path, lines: list[str]) -> SessionInfo:
-    """Core session info extraction from pre-read lines.
+def parse_session_info(jsonl_path: Path) -> SessionInfo:
+    """Quick scan of a JSONL file to extract session metadata.
 
-    Factored out of parse_session_info() so parse_session_complete()
-    can reuse it without an extra file read.
+    Strategy: read the first line and the last ~50 lines to extract:
+    - session_id: from worktreeSession line or any message's sessionId field
+    - slug: from assistant messages (only some have it)
+    - first_timestamp / last_timestamp
+    - message_count / user_message_count (approximate from full scan of lines)
+    - cwd, git_branch
+
+    This avoids loading full message content, keeping it lightweight for
+    listing views.
     """
     session_id = jsonl_path.stem  # fallback: filename without .jsonl
     slug: Optional[str] = None
@@ -220,6 +227,8 @@ def _parse_session_info_from_lines(jsonl_path: Path, lines: list[str]) -> Sessio
     total_input_tokens = 0
     total_output_tokens = 0
     last_user_message: Optional[str] = None
+
+    lines = _read_lines(jsonl_path)
 
     for line in lines:
         line = line.strip()
@@ -378,23 +387,6 @@ def _parse_session_info_from_lines(jsonl_path: Path, lines: list[str]) -> Sessio
     )
 
 
-def parse_session_info(jsonl_path: Path) -> SessionInfo:
-    """Quick scan of a JSONL file to extract session metadata.
-
-    Strategy: read the first line and the last ~50 lines to extract:
-    - session_id: from worktreeSession line or any message's sessionId field
-    - slug: from assistant messages (only some have it)
-    - first_timestamp / last_timestamp
-    - message_count / user_message_count (approximate from full scan of lines)
-    - cwd, git_branch
-
-    This avoids loading full message content, keeping it lightweight for
-    listing views.
-    """
-    lines = _read_lines(jsonl_path)
-    return _parse_session_info_from_lines(jsonl_path, lines)
-
-
 def parse_session_messages(jsonl_path: Path) -> list[JSONLMessage]:
     """Parse all user/assistant messages from a JSONL file.
 
@@ -459,56 +451,6 @@ def get_last_assistant_messages(
 
     # Return last N in chronological order
     return assistant_msgs[-count:]
-
-
-def parse_session_complete(
-    jsonl_path: Path,
-    display_name: Optional[str] = None,
-    last_msg_count: int = 1,
-) -> tuple[SessionInfo, "LineageSignals", list[JSONLMessage]]:
-    """Single-pass JSONL read returning session info, lineage signals, and last messages.
-
-    Replaces the triple-read pattern:
-        parse_session_info()         — 1st full read
-        parse_lineage_signals()      — 2nd full read
-        get_last_assistant_messages() — 3rd tail read
-
-    Now reads the file once and derives all three results from the
-    same line buffer.
-
-    Returns:
-        (SessionInfo, LineageSignals, list[JSONLMessage])
-    """
-    from ccsm.core.lineage import extract_signals_from_lines, LineageSignals
-
-    # Single file read
-    lines = _read_lines(jsonl_path)
-
-    # 1) SessionInfo — reuse existing logic with pre-read lines
-    info = _parse_session_info_from_lines(jsonl_path, lines)
-
-    # 2) LineageSignals — from same lines
-    signals = extract_signals_from_lines(lines, display_name=display_name)
-
-    # 3) Last assistant messages — scan all lines for assistant messages
-    assistant_msgs: list[JSONLMessage] = []
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            data = json.loads(line)
-        except (json.JSONDecodeError, ValueError):
-            continue
-        if data.get("type") != "assistant":
-            continue
-        msg = _parse_message_line(data)
-        if msg is not None and msg.content:
-            assistant_msgs.append(msg)
-
-    last_msgs = assistant_msgs[-last_msg_count:] if last_msg_count > 0 else []
-
-    return info, signals, last_msgs
 
 
 # ─── Lightweight timestamp extraction ──────────────────────────────────────────
@@ -611,10 +553,6 @@ def parse_session_detail(jsonl_path: Path) -> SessionDetailData:
     last_user_msg: Optional[str] = None
     last_assistant_msg: Optional[str] = None
 
-    from ccsm.models.session import BackgroundTaskInfo
-    background_tasks: list[BackgroundTaskInfo] = []
-    _seen_task_ids: set[str] = set()  # Dedup by task_id
-
     session_id = jsonl_path.stem
     lines = _read_lines(jsonl_path)
 
@@ -657,41 +595,6 @@ def parse_session_detail(jsonl_path: Path) -> SessionDetailData:
                         continue
                     tool_name = block.get("name", "")
                     tool_input = block.get("input", {})
-
-                    # ── Background tasks: TaskCreate/TaskUpdate/TaskStop ──
-                    if tool_name == "TaskCreate":
-                        subject = tool_input.get("subject", "")
-                        if subject and subject not in _seen_task_ids:
-                            _seen_task_ids.add(subject)
-                            background_tasks.append(BackgroundTaskInfo(
-                                task_id=str(len(background_tasks) + 1),
-                                subject=subject[:100],
-                                status="pending",
-                                tool_name="TaskCreate",
-                                description=tool_input.get("description", "")[:200] if tool_input.get("description") else None,
-                            ))
-                        continue
-
-                    elif tool_name == "TaskUpdate":
-                        task_id = tool_input.get("taskId", "")
-                        new_status = tool_input.get("status", "")
-                        if task_id and new_status:
-                            # 更新已有任务的状态
-                            for bt in background_tasks:
-                                if bt.task_id == task_id:
-                                    bt.status = new_status
-                                    break
-                        continue
-
-                    elif tool_name == "TaskStop":
-                        task_id = tool_input.get("taskId", "")
-                        if task_id:
-                            for bt in background_tasks:
-                                if bt.task_id == task_id:
-                                    bt.status = "stopped"
-                                    break
-                        continue
-
                     summary = _summarize_tool_input(tool_name, tool_input)
                     if not summary:
                         continue
@@ -708,18 +611,6 @@ def parse_session_detail(jsonl_path: Path) -> SessionDetailData:
                     elif tool_name == "Agent":
                         if len(agents_spawned) < 10:
                             agents_spawned.append(summary)
-                        # 同时追加到 background_tasks
-                        desc = tool_input.get("description", "")
-                        agent_id = tool_input.get("name", "")
-                        if desc and desc not in _seen_task_ids:
-                            _seen_task_ids.add(desc)
-                            background_tasks.append(BackgroundTaskInfo(
-                                task_id=agent_id or f"agent-{len(background_tasks)}",
-                                subject=desc[:100],
-                                status="running",
-                                tool_name="Agent",
-                                description=tool_input.get("prompt", "")[:200] if tool_input.get("prompt") else None,
-                            ))
 
     return SessionDetailData(
         session_id=session_id,
@@ -728,7 +619,6 @@ def parse_session_detail(jsonl_path: Path) -> SessionDetailData:
         files_read=sorted(files_read),
         searches=sorted(searches),
         agents_spawned=agents_spawned,
-        background_tasks=background_tasks,
         last_user_msg=last_user_msg,
         last_assistant_msg=last_assistant_msg,
     )

@@ -488,22 +488,6 @@ class CompactSummaryParsed:
 
 
 @dataclass
-class BackgroundTaskInfo:
-    """A background task or subagent detected in a session's JSONL.
-
-    Extracted from tool_use blocks of TaskCreate, TaskUpdate, TaskStop,
-    and Agent tools. Used by the Detail panel to show "what was running
-    in the background" during this session.
-    """
-
-    task_id: str                         # Task ID or agent ID
-    subject: str                         # Task title or agent description
-    status: str = "unknown"              # "pending" | "running" | "completed" | "failed" | "stopped"
-    tool_name: str = ""                  # "TaskCreate" | "TaskUpdate" | "TaskStop" | "Agent"
-    description: Optional[str] = None    # Longer description if available
-
-
-@dataclass
 class SessionDetailData:
     """Deep-parsed data for the Detail panel (loaded on demand).
 
@@ -517,6 +501,28 @@ class SessionDetailData:
     files_read: list[str] = field(default_factory=list)       # From tool_use(Read/Glob/Grep)
     searches: list[str] = field(default_factory=list)         # From tool_use(Grep/Glob) patterns
     agents_spawned: list[str] = field(default_factory=list)   # From tool_use(Agent) descriptions
-    background_tasks: list[BackgroundTaskInfo] = field(default_factory=list)  # From TaskCreate/Agent
     last_user_msg: Optional[str] = None     # Full last user message
     last_assistant_msg: Optional[str] = None  # Full last assistant message
+
+
+# ─── Utility functions ────────────────────────────────────────────────────────
+
+
+def resolve_title(session: SessionInfo, meta: Optional[SessionMeta]) -> str:
+    """Canonical title resolution — single source of truth.
+
+    Priority (highest -> lowest):
+      1. meta.name            - user-set or AI-locked title
+      2. meta.ai_intent       - AI-extracted intent (if meta.name empty)
+      3. session.display_title - internal fallback chain:
+         display_name -> custom_title -> ai_title_from_cc -> slug -> sid[:8]
+    """
+    if meta is not None:
+        if meta.name and meta.name.strip():
+            return meta.name
+        ai_intent = getattr(meta, "ai_intent", None)
+        if ai_intent:
+            intent = ai_intent.strip()
+            if intent and len(intent) <= 80:
+                return intent
+    return session.display_title or session.session_id[:8]

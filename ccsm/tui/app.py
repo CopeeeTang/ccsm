@@ -11,6 +11,7 @@ from pathlib import Path
 
 from textual.app import App, ComposeResult
 
+from ccsm.core.config import get_pref, set_pref
 from ccsm.tui.screens.main import MainScreen
 
 
@@ -31,15 +32,22 @@ class CCSMApp(App):
     ]
 
     def on_mount(self) -> None:
-        """Push the main screen on startup."""
+        """Push the main screen and apply persisted theme preference."""
         self.push_screen("main")
+        # Apply persisted theme preference (default: light).
+        theme = get_pref("theme", "light")
+        if theme == "light":
+            self.add_class("-light-theme")
+        # dark = no class
 
     def action_toggle_theme(self) -> None:
-        """Toggle light and dark mode."""
+        """Toggle light and dark mode, persisting the new value."""
         if self.has_class("-light-theme"):
             self.remove_class("-light-theme")
+            set_pref("theme", "dark")
         else:
             self.add_class("-light-theme")
+            set_pref("theme", "light")
 
     def action_toggle_language(self) -> None:
         """Toggle between zh-CN and English."""
@@ -47,6 +55,7 @@ class CCSMApp(App):
 
         new_lang = "en" if get_language() == "zh-CN" else "zh-CN"
         set_language(new_lang)
+        set_pref("language", new_lang)
         self.notify(f"Language: {new_lang}", timeout=2)
 
 

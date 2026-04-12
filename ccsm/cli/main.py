@@ -6,7 +6,6 @@ Provides subcommands:
     ccsm resume   — Resume a session by ID
 """
 
-import os
 from typing import Optional
 
 import click
@@ -30,23 +29,10 @@ def cli(ctx: click.Context, lang: Optional[str]) -> None:
 
 
 @cli.command()
-@click.option(
-    "--debug-render",
-    is_flag=True,
-    help="Write swimlane render snapshots to a debug log file.",
-)
-@click.option(
-    "--debug-render-file",
-    default="/tmp/ccsm_swimlane_debug.log",
-    show_default=True,
-    help="Path for swimlane debug render log.",
-)
-def tui(debug_render: bool, debug_render_file: str) -> None:
+def tui() -> None:
     """Launch the TUI session manager."""
     from ccsm.tui.app import run
 
-    if debug_render:
-        os.environ["CCSM_DEBUG_RENDER_FILE"] = debug_render_file
     run()
 
 

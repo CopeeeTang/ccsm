@@ -63,15 +63,9 @@ def _validate_session_id(session_id: str) -> str:
 
 
 def get_ccsm_dir() -> Path:
-    """Return ~/.ccsm/ path, creating it (and sub-dirs) if absent.
-
-    Sets owner-only permissions (0o700) to prevent other users from
-    reading session metadata on shared servers.
-    """
+    """Return ~/.ccsm/ path, creating it (and sub-dirs) if absent."""
     ccsm_dir = Path.home() / ".ccsm"
     ccsm_dir.mkdir(parents=True, exist_ok=True)
-    # Secure permissions: owner-only access (rwx------)
-    ccsm_dir.chmod(0o700)
     (ccsm_dir / "meta").mkdir(exist_ok=True)
     (ccsm_dir / "summaries").mkdir(exist_ok=True)
     return ccsm_dir
@@ -412,17 +406,6 @@ def save_summary(summary: SessionSummary) -> None:
     _atomic_write_json(
         _summary_path(summary.session_id), _summary_to_dict(summary)
     )
-
-
-def is_summary_stale(summary_path: Path, jsonl_path: Path) -> bool:
-    """Check if a cached summary is older than its source JSONL.
-
-    Returns True if the JSONL has been modified after the summary was written.
-    Returns False if either file doesn't exist (conservative: don't invalidate).
-    """
-    if not summary_path.exists() or not jsonl_path.exists():
-        return False
-    return jsonl_path.stat().st_mtime > summary_path.stat().st_mtime
 
 
 def update_meta(session_id: str, **kwargs: Any) -> SessionMeta:

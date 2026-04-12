@@ -20,7 +20,6 @@ from __future__ import annotations
 import logging
 import time
 from datetime import timezone
-from pathlib import PurePosixPath
 from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
@@ -37,20 +36,6 @@ from ccsm.core.status import classify_all
 from ccsm.models.session import Priority, SessionInfo, SessionMeta, Status
 
 logger = logging.getLogger(__name__)
-
-
-def _sanitize_cwd(cwd: str | None) -> str:
-    """Return only the last path component to avoid leaking full paths.
-
-    Examples:
-        /home/user/projects/my-app → my-app
-        /home/user/project/        → project
-        None                       → ""
-    """
-    if not cwd:
-        return ""
-    return PurePosixPath(cwd.rstrip("/")).name
-
 
 # ─── FastMCP instance ──────────────────────────────────────────────────────
 
@@ -297,7 +282,7 @@ def get_session_detail(session_id: str) -> dict:
 
     # Add extra info
     result["slug"] = info.slug
-    result["cwd"] = _sanitize_cwd(info.cwd)
+    result["cwd"] = info.cwd
     result["git_branch"] = info.git_branch
     result["user_message_count"] = info.user_message_count
 
@@ -408,7 +393,7 @@ def resume_session(session_id: str) -> dict:
         "command": command,
         "is_running": info.is_running,
         "status": info.status.value,
-        "cwd": _sanitize_cwd(info.cwd),
+        "cwd": info.cwd,
     }
 
 
@@ -449,7 +434,7 @@ def enter_session(session_id: str) -> dict:
         "command": resume_cmd,
         "is_running": info.is_running,
         "status": info.status.value,
-        "cwd": _sanitize_cwd(info.cwd),
+        "cwd": info.cwd,
         "git_branch": info.git_branch,
         "message_count": info.message_count,
     }

@@ -1,18 +1,15 @@
-"""Main screen: dual-panel layout with worktree tree and session list.
-
-Detail is shown via a right-side Drawer overlay (ModalScreen).
+"""Main screen: three-column layout with worktree tree, session list, and inline detail.
 
 This is the primary screen of the CCSM TUI. It:
 1. Discovers projects and worktrees on mount
 2. Parses session metadata asynchronously
 3. Classifies sessions by status/priority
-4. Opens detail Drawer on session selection
+4. Shows session detail inline in the third column
 """
 
 from __future__ import annotations
 
 import logging
-import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -21,7 +18,7 @@ from textual import work
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
-from textual.widgets import Footer, Header, Input, Static
+from textual.widgets import Input, Static
 
 from ccsm.core.discovery import (
     discover_projects,
@@ -30,10 +27,9 @@ from ccsm.core.discovery import (
 )
 from ccsm.core.index import IndexEntry, SessionIndex
 from ccsm.core.lineage import LineageSignals, parse_lineage_signals
-from ccsm.core.meta import load_all_meta, load_meta, load_summary, lock_title, save_workflows
+from ccsm.core.meta import load_all_meta, load_meta, load_summary, lock_title
 from ccsm.core.parser import (
     get_last_assistant_messages,
-    parse_session_complete,
     parse_session_info,
     parse_session_messages,
 )
@@ -44,45 +40,14 @@ from ccsm.core.summarizer import (
     summarize_session,
 )
 from ccsm.core.status import classify_all
-from ccsm.models.session import Project, SessionInfo, SessionMeta, Status, WorkflowCluster, Worktree
-from ccsm.tui.screens.drawer import SessionDetailDrawer
+from ccsm.models.session import Project, SessionInfo, SessionMeta, Status, Worktree
+from ccsm.tui.screens.drawer import SessionDetailPanel
 from ccsm.tui.widgets.session_detail import SessionDetail
 from ccsm.tui.widgets.session_list import SessionListPanel
-from ccsm.tui.widgets.swimlane import Swimlane
 from ccsm.tui.widgets.worktree_tree import WorktreeTree
 
 logger = logging.getLogger(__name__)
 
-
-class _DebounceTimer:
-    """Thread-safe debounce timer for search queries.
-
-    Cancels previous pending callback and reschedules on each call.
-    """
-
-    def __init__(self, delay: float, callback):
-        self._delay = delay
-        self._callback = callback
-        self._timer: threading.Timer | None = None
-        self._lock = threading.Lock()
-
-    def schedule(self, query: str) -> None:
-        """Schedule callback after delay, cancelling any pending call."""
-        with self._lock:
-            if self._timer is not None:
-                self._timer.cancel()
-            self._timer = threading.Timer(
-                self._delay, self._callback, args=(query,)
-            )
-            self._timer.daemon = True
-            self._timer.start()
-
-    def cancel(self) -> None:
-        """Cancel pending callback."""
-        with self._lock:
-            if self._timer is not None:
-                self._timer.cancel()
-                self._timer = None
 
 
 def _is_meaningless_title(title: str) -> bool:
@@ -119,7 +84,7 @@ def _is_meaningless_title(title: str) -> bool:
     return False
 
 class MainScreen(Screen):
-    """Primary dual-panel screen with Drawer overlay for detail."""
+    """Primary three-column screen with inline detail panel."""
 
     BINDINGS = [
         ("q", "quit", "Quit"),
@@ -132,8 +97,21 @@ class MainScreen(Screen):
         ("3", "switch_tab_3", "Idea"),
         ("4", "switch_tab_4", "Done"),
         ("0", "switch_tab_all", "All"),
-        ("g", "toggle_graph", "Graph"),
         ("D", "batch_archive", "Archive"),
+        # Keyboard-first navigation
+        ("up", "cursor_up", "Up"),
+        ("k", "cursor_up", "Up"),
+        ("down", "cursor_down", "Down"),
+        ("j", "cursor_down", "Down"),
+        ("enter", "confirm_selection", "Open"),
+        ("space", "confirm_selection", "Open"),
+        ("escape", "close_detail_or_search", "Close"),
+        ("g", "cursor_top", "Top"),
+        ("G", "cursor_bottom", "Bottom"),
+        ("pageup", "page_up", "PageUp"),
+        ("pagedown", "page_down", "PageDown"),
+        ("tab", "cycle_focus_forward", "Tab"),
+        ("shift+tab", "cycle_focus_backward", "ShiftTab"),
     ]
 
     def __init__(self, **kwargs) -> None:
@@ -152,65 +130,48 @@ class MainScreen(Screen):
         self._lineage_signals: dict[str, LineageSignals] = {}  # Pain point #1,5,7,8
         self._lineage_types: dict[str, str] = {}  # session_id → "fork"/"compact"/"duplicate"
         self._lineage_graph: dict = {}  # session_id → SessionLineage (parent/child DAG)
-        # Pain point #3,4: search index with disk persistence
-        self._session_index = self._load_persisted_index()
-        self._workflow_cluster: Optional[WorkflowCluster] = None  # v2: workflow data
-        self._ai_cluster_timer = None  # Timer for background AI clustering
-        self._drawer: Optional[SessionDetailDrawer] = None  # Active drawer
-        self._search_debounce = _DebounceTimer(
-            delay=0.2,
-            callback=self._execute_search_in_thread,
-        )
-        self._graph_mode: bool = False
-
-    # ── Index persistence helpers ──────────────────────────────────────────
-
-    @staticmethod
-    def _index_path() -> Path:
-        """Return path for persisted search index."""
-        from ccsm.core.meta import get_ccsm_dir
-        return get_ccsm_dir() / "search_index.json"
-
-    @staticmethod
-    def _load_persisted_index() -> SessionIndex:
-        """Load search index from disk if available, else return empty."""
-        try:
-            p = MainScreen._index_path()
-            if p.exists():
-                return SessionIndex.load(p)
-        except Exception:
-            pass
-        return SessionIndex()
+        self._session_index = SessionIndex()  # Pain point #3,4
+        # Keyboard-first navigation state
+        self._focus_chain = ["#worktree-panel", "#session-panel", "#detail-panel"]
+        # Debounced detail preview
+        self._hover_debounce_timer = None
+        self._hovered_session: Optional[SessionInfo] = None
 
     def compose(self) -> ComposeResult:
-        yield Static("⬡ CCSM — Claude Code Session Manager", id="header-bar")
         with Horizontal(id="main-container"):
-            # Left panel: Worktree tree
+            # Column 1: Worktree tree (15%)
             with Vertical(id="worktree-panel"):
                 yield Static(" WORKTREES", classes="panel-title")
                 yield WorktreeTree()
-            # Right panel: Session list (dual mode: list / swimlane)
+            # Column 2: Session list (55%)
             with Vertical(id="session-panel"):
-                yield Static(" SESSIONS", classes="panel-title")
+                yield Static(" SESSIONS", classes="panel-title", id="session-panel-title")
                 yield Input(
-                    placeholder="🔍 Search sessions…",
+                    placeholder="Search...",
                     id="search-input",
                     classes="search-input -hidden",
                 )
                 yield SessionListPanel()
-                yield Swimlane(id="session-graph")
+            # Column 3: Inline detail (30%)
+            with Vertical(id="detail-panel"):
+                yield Static(" DETAIL", classes="panel-title")
+                yield SessionDetailPanel()
+        # Minimal footer — Claude-native style with middle-dot separators
         yield Static(
-            " [#d97757]↑↓[/] Navigate  "
-            "[#d97757]0-4[/] Filter  [#d97757]/[/] Search  [#d97757]g[/] Graph  "
-            "[#d97757]Enter[/] Detail  [#d97757]r[/] Resume  [#d97757]s[/] AI  "
-            "[#d97757]D[/] Archive  [#d97757]q[/] Quit",
+            "[#78716c]↑↓[/] Navigate  "
+            "[#78716c]·[/]  "
+            "[#78716c]Enter[/] Open  "
+            "[#78716c]·[/]  "
+            "[#78716c]r[/] Resume  "
+            "[#78716c]·[/]  "
+            "[#78716c]/[/] Search  "
+            "[#78716c]·[/]  "
+            "[#78716c]q[/] Quit",
             id="footer-bar",
         )
 
     def on_mount(self) -> None:
         """Start loading data after mount."""
-        graph = self.query_one(Swimlane)
-        graph.display = False
         self._load_data()
 
     @work(thread=True)
@@ -219,24 +180,17 @@ class MainScreen(Screen):
 
         Strategy: discover projects/worktrees immediately for the tree view.
         Session JSONL parsing is deferred until a worktree is selected.
-        Steps 2-4 (running sessions, display names, metadata) are independent
-        and run in parallel via ThreadPoolExecutor.
         """
         try:
-            from concurrent.futures import ThreadPoolExecutor
-
             # Step 1: Discover projects & worktrees (fast — filesystem only)
             projects = discover_projects()
 
-            # Steps 2-4: independent I/O — run in parallel
-            with ThreadPoolExecutor(max_workers=3) as pool:
-                fut_running = pool.submit(load_running_sessions)
-                fut_names = pool.submit(load_display_names)
-                fut_meta = pool.submit(load_all_meta)
+            # Step 2: Load running sessions & display names (fast — small files)
+            running = load_running_sessions()
+            display_names = load_display_names()
 
-                running = fut_running.result()
-                display_names = fut_names.result()
-                all_meta = fut_meta.result()
+            # Step 3: Load all metadata (fast — small JSON files)
+            all_meta = load_all_meta()
 
             # Step 4: Enrich sessions with display_name and running state
             # (no JSONL parsing — just matching by session_id)
@@ -325,56 +279,12 @@ class MainScreen(Screen):
             lineage_graph=self._lineage_graph,
         )
 
-    def _session_statuses(self) -> dict[str, Status]:
-        """Return current status map for workflow rendering."""
-        return {
-            session.session_id: session.status
-            for session in self._current_sessions
-            if session.status is not None
-        }
-
-    def _update_workflow_view(self) -> None:
-        """Refresh the workflow swimlane with the current cluster."""
-        swimlane = self.query_one(Swimlane)
-        cluster = self._workflow_cluster
-        if cluster is None:
-            return
-        swimlane.set_data(
-            cluster,
-            statuses=self._session_statuses(),
-            current_session_id=(
-                self._selected_session.session_id
-                if self._selected_session is not None
-                else None
-            ),
-            compact=True,
-        )
-
-    def _set_graph_mode(self, enabled: bool) -> None:
-        """Show either the session list or the workflow graph."""
-        panel = self.query_one(SessionListPanel)
-        swimlane = self.query_one(Swimlane)
-
-        self._graph_mode = enabled
-        panel.display = not enabled
-        swimlane.display = enabled
-
-        if enabled:
-            self._update_workflow_view()
-            swimlane.focus()
-        else:
-            panel.focus()
-
     # ── Worktree selection ──────────────────────────────────────────────────
 
     def on_worktree_tree_worktree_selected(
         self, event: WorktreeTree.WorktreeSelected
     ) -> None:
         """Parse and display sessions for the selected worktree."""
-        # Show skeleton loading state immediately
-        panel = self.query_one(SessionListPanel)
-        panel.show_loading()
-
         self._load_worktree_sessions(event.worktree, event.project)
 
     def on_worktree_tree_project_selected(
@@ -402,24 +312,10 @@ class MainScreen(Screen):
         """Parse session info, classify, extract thoughts — runs in thread."""
         try:
             parsed: list[SessionInfo] = []
-            lineage_types: dict[str, str] = {}
-            lineage_signals_local: dict[str, LineageSignals] = {}
-            last_thoughts: dict[str, str] = {}
-
-            # ── Single-pass: read each JSONL once ──
             for session in sessions:
                 try:
-                    info, sig, last_msgs = parse_session_complete(
-                        session.jsonl_path,
-                        display_name=(
-                            self._display_names.get(session.session_id)
-                            if hasattr(self, '_display_names')
-                            else None
-                        ),
-                        last_msg_count=1,
-                    )
-
-                    # Sync fields from info to session (same as before)
+                    info = parse_session_info(session.jsonl_path)
+                    # Fix: sync session_id from JSONL content (file stem may differ)
                     if info.session_id and info.session_id != session.jsonl_path.stem:
                         session.session_id = info.session_id
                     session.slug = info.slug
@@ -452,19 +348,6 @@ class MainScreen(Screen):
                     if hasattr(self, '_running') and session.session_id in self._running:
                         session.is_running = True
 
-                    # Lineage signals (from same read)
-                    lineage_signals_local[session.session_id] = sig
-                    if sig.last_message_at:
-                        session.last_timestamp = sig.last_message_at
-                    if sig.is_fork:
-                        lineage_types[session.session_id] = "fork"
-                    elif sig.has_compact_boundary:
-                        lineage_types[session.session_id] = "compact"
-
-                    # Last thought (from same read)
-                    if last_msgs:
-                        last_thoughts[session.session_id] = last_msgs[-1].content[:200]
-
                     parsed.append(session)
                 except Exception as e:
                     logger.debug("Skip session %s: %s", session.session_id, e)
@@ -476,6 +359,29 @@ class MainScreen(Screen):
                 meta = self._all_meta.get(s.session_id)
                 if meta and meta.name and _is_meaningless_title(s.display_name or ''):
                     s.display_name = meta.name
+
+            # ── Lineage scanning (pain points #1, #5, #6, #7) ──
+            # NOTE: Must run BEFORE classify_all so that corrected
+            # last_timestamp is used for status inference (M2 fix).
+            lineage_types: dict[str, str] = {}
+            lineage_signals_local: dict[str, LineageSignals] = {}
+            for s in parsed:
+                try:
+                    sig = parse_lineage_signals(
+                        s.jsonl_path,
+                        display_name=s.display_name,
+                    )
+                    lineage_signals_local[s.session_id] = sig
+                    # Fix pain point #6: use last_message_at from actual messages
+                    if sig.last_message_at:
+                        s.last_timestamp = sig.last_message_at
+                    # Track lineage type for badge display
+                    if sig.is_fork:
+                        lineage_types[s.session_id] = "fork"
+                    elif sig.has_compact_boundary:
+                        lineage_types[s.session_id] = "compact"
+                except Exception:
+                    pass
 
             # Classify AFTER lineage scanning so corrected timestamps are used
             classify_all(parsed, self._all_meta, all_running=self._running)
@@ -498,15 +404,8 @@ class MainScreen(Screen):
                 ))
             self._session_index.update_entries(index_entries)
 
-            # Persist index for faster subsequent loads
-            try:
-                self._session_index.save(self._index_path())
-            except Exception:
-                pass  # Non-critical — index is regenerable
-
-            # ── Build workflow cluster from lineage (v2) ──
+            # ── Build lineage graph from signals ──
             from ccsm.core.lineage import build_lineage_graph
-            from ccsm.core.workflow import extract_workflows
             graph = build_lineage_graph(lineage_signals_local)
 
             # Enrich lineage_types from graph (graph has more accurate types)
@@ -518,26 +417,21 @@ class MainScreen(Screen):
                     if lt_str != "root":
                         lineage_types[sid] = lt_str
 
-            wf_titles = {}
-            for s in parsed:
-                meta_s = self._all_meta.get(s.session_id)
-                wf_titles[s.session_id] = (
-                    (meta_s.name if meta_s and meta_s.name else None)
-                    or s.display_title
-                )
-            wf_cluster = extract_workflows(
-                graph, lineage_signals_local, wf_titles, label, ""
-            )
-            # Mark active workflows
-            active_sids = {s.session_id for s in parsed if s.status == Status.ACTIVE}
-            for wf in wf_cluster.workflows:
-                wf.is_active = any(sid in active_sids for sid in wf.sessions)
-
-            # NOTE: last_thoughts already collected in single-pass loop above
+            # Extract last thoughts for non-noise sessions (performance)
+            last_thoughts: dict[str, str] = {}
+            for session in parsed:
+                if session.status == Status.NOISE:
+                    continue
+                try:
+                    msgs = get_last_assistant_messages(session.jsonl_path, count=1)
+                    if msgs:
+                        last_thoughts[session.session_id] = msgs[-1].content[:200]
+                except Exception:
+                    pass
 
             self.app.call_from_thread(
                 self._on_sessions_parsed, parsed, last_thoughts, label,
-                lineage_types, lineage_signals_local, wf_cluster, graph,
+                lineage_types, lineage_signals_local, graph,
             )
         except Exception as e:
             logger.warning("Failed to parse sessions: %s", e)
@@ -549,7 +443,6 @@ class MainScreen(Screen):
         label: str,
         lineage_types: dict[str, str] | None = None,
         lineage_signals: dict[str, LineageSignals] | None = None,
-        workflow_cluster: Optional[WorkflowCluster] = None,
         lineage_graph: dict | None = None,
     ) -> None:
         """Update UI with parsed sessions."""
@@ -558,7 +451,6 @@ class MainScreen(Screen):
         self._last_thoughts = dict(last_thoughts)
         self._lineage_types = dict(lineage_types) if lineage_types else {}
         self._lineage_signals = dict(lineage_signals) if lineage_signals else {}
-        self._workflow_cluster = workflow_cluster
         self._lineage_graph = dict(lineage_graph) if lineage_graph else {}
 
         # Clear stale selected session if it's not in the new dataset
@@ -571,21 +463,10 @@ class MainScreen(Screen):
                     self._auto_summary_timer = None
 
         # Update panel title
-        title = self.query_one("#session-panel .panel-title", Static)
+        title = self.query_one("#session-panel-title", Static)
         title.update(f" SESSIONS · {label}")
 
-        if self._graph_mode:
-            self._update_workflow_view()
-        else:
-            self._update_session_list()
-
-        # Schedule silent AI naming after 2s (non-blocking)
-        if self._ai_cluster_timer:
-            self._ai_cluster_timer.stop()
-        if self._workflow_cluster and self._workflow_cluster.workflows:
-            self._ai_cluster_timer = self.set_timer(
-                2.0, self._try_ai_workflow_naming
-            )
+        self._update_session_list()
 
         # Schedule background batch AI title generation (non-blocking)
         self.set_timer(1.0, lambda: self._batch_enrich_sessions())
@@ -595,21 +476,27 @@ class MainScreen(Screen):
     def on_session_list_panel_session_selected(
         self, event: SessionListPanel.SessionSelected
     ) -> None:
-        """Open detail Drawer when a card is selected.
+        """Update inline detail panel for the selected session.
 
         Also schedules silent AI summary after 1.5s hover (if no cached LLM summary).
         """
         session = event.session
         self._selected_session = session
 
+        # Cancel any pending debounce preview (avoid duplicate load)
+        if self._hover_debounce_timer is not None:
+            try:
+                self._hover_debounce_timer.stop()
+            except Exception:
+                pass
+            self._hover_debounce_timer = None
+
         # Cancel any pending auto-summary timer
         if self._auto_summary_timer is not None:
             self._auto_summary_timer.stop()
             self._auto_summary_timer = None
 
-        # Open Drawer and start loading detail
-        self._drawer = SessionDetailDrawer()
-        self.app.push_screen(self._drawer)
+        # No modal push — directly update the inline detail panel
         self._load_session_detail(session)
 
         # Schedule silent LLM summary after 1.5s if:
@@ -625,17 +512,6 @@ class MainScreen(Screen):
                 lambda: self._try_silent_summary(session),
             )
 
-    def on_swimlane_workflow_selected(
-        self, event: Swimlane.WorkflowSelected
-    ) -> None:
-        """Open workflow detail from the swimlane graph."""
-        self._drawer = SessionDetailDrawer()
-        self.app.push_screen(self._drawer)
-        self._drawer.show_workflow_detail(
-            event.workflow,
-            session_statuses=self._session_statuses(),
-        )
-
     @work(thread=True)
     def _load_session_detail(self, session: SessionInfo) -> None:
         """Load session detail data in background.
@@ -649,14 +525,8 @@ class MainScreen(Screen):
             meta = load_meta(session.session_id)
 
             # Load last assistant messages for reply display
-            from ccsm.core.parse_cache import cached_parse_complete
-            _, _, cached_msgs = cached_parse_complete(session.jsonl_path)
-            # cached_msgs defaults to last 1; detail panel needs 3
-            if len(cached_msgs) >= 3:
-                last_msgs = cached_msgs[-3:]
-            else:
-                last_msgs = get_last_assistant_messages(session.jsonl_path, count=3)
-            replies = [m for m in last_msgs if m.content]  # Pass full JSONLMessage objects
+            last_msgs = get_last_assistant_messages(session.jsonl_path, count=3)
+            replies = [m.content for m in last_msgs if m.content]
 
             # Use summarizer: checks cache first, then extracts milestones
             summary = summarize_session(
@@ -692,18 +562,21 @@ class MainScreen(Screen):
         session: SessionInfo,
         meta,
         summary,
-        replies: list,
+        replies: list[str],
         detail_data=None,
         compact_parsed=None,
     ) -> None:
-        """Update Drawer detail on UI thread."""
-        # Only update if this session is still selected and drawer is open
+        """Update inline detail panel on UI thread."""
+        # Only update if this session is still selected
         if self._selected_session and self._selected_session.session_id == session.session_id:
-            if self._drawer is not None:
-                self._drawer.show_session(
+            try:
+                detail = self.query_one("#detail-content", SessionDetail)
+                detail.show_session(
                     session, meta=meta, summary=summary, last_replies=replies,
                     detail_data=detail_data, compact_parsed=compact_parsed,
                 )
+            except Exception:
+                pass
 
     # ── Actions ─────────────────────────────────────────────────────────────
 
@@ -713,22 +586,21 @@ class MainScreen(Screen):
     def action_resume_session(self) -> None:
         """Resume the selected session via claude --resume.
 
-        Passes a structured descriptor to app.exit() containing:
-        - session_id: UUID for ``claude --resume <id>``
-        - project_dir: cwd to launch claude in (ensures workspace trust)
-        - jsonl_path: fallback for cross-worktree resume
+        Uses the JSONL file path instead of session_id to ensure cross-worktree
+        resume works correctly. Claude Code resolves session_id by cwd, but
+        the JSONL path works regardless of current working directory.
         """
         if self._selected_session is None:
             self.notify("No session selected", severity="warning")
             return
 
         session = self._selected_session
-        self.app.exit(result={
-            "action": "resume",
-            "session_id": session.session_id,
-            "project_dir": session.project_dir,
-            "jsonl_path": str(session.jsonl_path) if session.jsonl_path else None,
-        })
+        # Use jsonl_path for reliable cross-worktree resume
+        if session.jsonl_path and session.jsonl_path.exists():
+            self.app.exit(result=str(session.jsonl_path))
+        else:
+            # Fallback to session_id (same-project resume)
+            self.app.exit(result=session.session_id)
 
     def action_toggle_noise(self) -> None:
         """Toggle NOISE session visibility."""
@@ -823,7 +695,7 @@ class MainScreen(Screen):
             ):
                 meta = load_meta(session.session_id)
                 last_msgs = get_last_assistant_messages(session.jsonl_path, count=3)
-                replies = [m for m in last_msgs if m.content]  # Pass full JSONLMessage objects
+                replies = [m.content for m in last_msgs if m.content]
 
                 # Re-parse compact and detail data so LLM refresh doesn't lose them
                 compact_parsed = None
@@ -865,27 +737,19 @@ class MainScreen(Screen):
             search_input.focus()
 
     def on_input_changed(self, event: Input.Changed) -> None:
-        """Filter session list as user types in search input (debounced)."""
+        """Filter session list as user types in search input."""
         if event.input.id != "search-input":
             return
         query = event.value.strip()
         if not query:
-            # Empty query: show full list immediately (no debounce)
             self._update_session_list()
             return
-        # Debounced: schedule search with 200ms delay
-        self._search_debounce.schedule(query)
 
-    def _execute_search_in_thread(self, query: str) -> None:
-        """Execute search off the UI thread and update results."""
+        # Use index for full-text search (pain point #4)
         results = self._session_index.search(query)
-        matched_ids = {e.session_id for e in results}
+        matched_ids = {r.session_id for r in results}
         filtered = [s for s in self._current_sessions if s.session_id in matched_ids]
-        # Update UI from the timer thread
-        self.app.call_from_thread(self._display_search_results, filtered, query)
 
-    def _display_search_results(self, filtered: list, query: str) -> None:
-        """Update session list with search results (UI thread)."""
         panel = self.query_one(SessionListPanel)
         panel.load_sessions(
             filtered,
@@ -904,11 +768,155 @@ class MainScreen(Screen):
         panel.focus()
 
     def on_key(self, event) -> None:
-        """Handle Escape to close search."""
-        if event.key == "escape" and self._search_active:
-            self.action_search()  # Toggle off
-            event.prevent_default()
-            event.stop()
+        """Handle keys that need special context checks."""
+        # j/k should not navigate when search input is focused
+        if event.key in ("j", "k", "g", "G") and self._search_active:
+            return  # Let the character pass through to the search input
+
+    # ── Keyboard-first navigation ──────────────────────────────────────
+
+    def _list_actionable(self) -> bool:
+        """Return True if keyboard navigation should act on the session list."""
+        if self._search_active:
+            return False
+        return True
+
+    def _update_panel_title(self) -> None:
+        """Refresh the session panel title with current cursor position."""
+        try:
+            panel = self.query_one(SessionListPanel)
+            title_static = self.query_one("#session-panel-title", Static)
+            title_static.update(panel.render_title_counter())
+        except Exception:
+            pass
+
+    def action_cursor_up(self) -> None:
+        if not self._list_actionable():
+            return
+        panel = self.query_one(SessionListPanel)
+        session = panel.move_cursor(-1)
+        if session is not None:
+            self._update_panel_title()
+            self._schedule_detail_preview(session)
+
+    def action_cursor_down(self) -> None:
+        if not self._list_actionable():
+            return
+        panel = self.query_one(SessionListPanel)
+        session = panel.move_cursor(1)
+        if session is not None:
+            self._update_panel_title()
+            self._schedule_detail_preview(session)
+
+    def action_cursor_top(self) -> None:
+        if not self._list_actionable():
+            return
+        panel = self.query_one(SessionListPanel)
+        session = panel.move_cursor_to("top")
+        if session is not None:
+            self._update_panel_title()
+            self._schedule_detail_preview(session)
+
+    def action_cursor_bottom(self) -> None:
+        if not self._list_actionable():
+            return
+        panel = self.query_one(SessionListPanel)
+        session = panel.move_cursor_to("bottom")
+        if session is not None:
+            self._update_panel_title()
+            self._schedule_detail_preview(session)
+
+    def action_page_up(self) -> None:
+        if not self._list_actionable():
+            return
+        panel = self.query_one(SessionListPanel)
+        session = panel.move_cursor_page(-1)
+        if session is not None:
+            self._update_panel_title()
+            self._schedule_detail_preview(session)
+
+    def action_page_down(self) -> None:
+        if not self._list_actionable():
+            return
+        panel = self.query_one(SessionListPanel)
+        session = panel.move_cursor_page(1)
+        if session is not None:
+            self._update_panel_title()
+            self._schedule_detail_preview(session)
+
+    def action_confirm_selection(self) -> None:
+        """Enter/Space: confirm the cursored card and load detail.
+
+        confirm_selection() posts a SessionSelected message which flows
+        through on_session_list_panel_session_selected — that handler
+        sets _selected_session and calls _load_session_detail, so we
+        must NOT duplicate either here.
+        """
+        panel = self.query_one(SessionListPanel)
+        panel.confirm_selection()
+        # NOTE: _selected_session is set by the SessionSelected message handler
+
+    def action_close_detail_or_search(self) -> None:
+        """Escape: close search if open, else focus back to session list."""
+        if self._search_active:
+            self.action_search()  # toggle search off
+            return
+        try:
+            panel = self.query_one(SessionListPanel)
+            panel.focus()
+        except Exception:
+            pass
+
+    def action_cycle_focus_forward(self) -> None:
+        """Tab: cycle focus across 3 panels."""
+        self._cycle_focus(1)
+
+    def action_cycle_focus_backward(self) -> None:
+        """Shift+Tab: cycle focus backwards."""
+        self._cycle_focus(-1)
+
+    def _cycle_focus(self, delta: int) -> None:
+        """Cycle focus across the 3-column layout."""
+        try:
+            panels = [self.query_one(sel) for sel in self._focus_chain]
+        except Exception:
+            return
+        # Find which panel (or its descendant) currently has focus
+        focused_idx = 0
+        focused = self.app.focused
+        if focused is not None:
+            for i, p in enumerate(panels):
+                # Check if focused widget is the panel or a descendant
+                try:
+                    if focused is p or focused in p.walk_children():
+                        focused_idx = i
+                        break
+                except Exception:
+                    pass
+        next_idx = (focused_idx + delta) % len(panels)
+        panels[next_idx].focus()
+
+    # ── Debounced detail preview ─────────────────────────────────────────
+
+    def _schedule_detail_preview(self, session: SessionInfo) -> None:
+        """Debounced detail load: waits 150ms of cursor stillness before loading."""
+        self._hovered_session = session
+        # Cancel any pending timer
+        if self._hover_debounce_timer is not None:
+            try:
+                self._hover_debounce_timer.stop()
+            except Exception:
+                pass
+        self._hover_debounce_timer = self.set_timer(
+            0.15,
+            lambda: self._fire_preview_if_stable(session),
+        )
+
+    def _fire_preview_if_stable(self, target: SessionInfo) -> None:
+        """If cursor still on `target` after debounce, load detail."""
+        if (self._hovered_session is not None
+                and self._hovered_session.session_id == target.session_id):
+            self._load_session_detail(target)
 
     # ── AI title generation ────────────────────────────────────────────
 
@@ -975,21 +983,6 @@ class MainScreen(Screen):
         """Switch to ALL filter (show all statuses)."""
         panel = self.query_one(SessionListPanel)
         panel.set_filter_all()
-
-    def action_toggle_graph(self) -> None:
-        """Toggle between the session list and workflow graph view."""
-        has_workflows = (
-            self._workflow_cluster is not None
-            and bool(self._workflow_cluster.workflows)
-        )
-        if not self._graph_mode and not has_workflows:
-            self.notify("No workflow graph available", severity="warning")
-            return
-
-        if self._search_active:
-            self.action_search()
-
-        self._set_graph_mode(not self._graph_mode)
 
     # ── Batch operations ───────────────────────────────────────────────
 
@@ -1134,59 +1127,3 @@ class MainScreen(Screen):
 
         # Final refresh
         self.app.call_from_thread(self._update_session_list)
-
-    def _try_ai_workflow_naming(self) -> None:
-        """Trigger background AI workflow naming if not already cached."""
-        if not self._workflow_cluster:
-            return
-        # Check if any workflow lacks an ai_name
-        needs_naming = any(
-            wf.ai_name is None for wf in self._workflow_cluster.workflows
-        )
-        if not needs_naming and not self._workflow_cluster.orphans:
-            return
-        self._run_ai_clustering()
-
-    @work(thread=True)
-    def _run_ai_clustering(self) -> None:
-        """Background AI clustering — name workflows and assign orphans."""
-        from ccsm.core.cluster import name_workflows_sync
-
-        cluster = self._workflow_cluster
-        if not cluster:
-            return
-
-        # Snapshot the worktree key to detect stale results
-        snapshot_worktree = cluster.worktree
-
-        # Build intents map from current sessions snapshot
-        sessions_snapshot = list(self._current_sessions)
-        intents: dict[str, str] = {}
-        for s in sessions_snapshot:
-            meta = self._all_meta.get(s.session_id)
-            intents[s.session_id] = (
-                (meta.ai_intent if meta else None)
-                or s.first_user_content
-                or ""
-            )
-
-        try:
-            updated = name_workflows_sync(cluster, intents)
-
-            # Discard if user switched worktrees while we were running
-            if (self._workflow_cluster is None
-                    or self._workflow_cluster.worktree != snapshot_worktree):
-                logger.debug("AI naming result discarded — worktree changed")
-                return
-
-            self._workflow_cluster = updated
-            save_workflows(updated)
-
-            # Refresh detail panel if still showing workflows
-            # NOTE: In Drawer architecture, SessionDetail lives inside
-            # ModalScreen, not MainScreen. Skip direct query to avoid NoMatches.
-            # Workflow display will be refreshed next time user opens a drawer.
-
-            logger.info("AI workflow naming completed: %d workflows", len(updated.workflows))
-        except Exception as e:
-            logger.debug("AI workflow naming failed: %s", e)

@@ -87,31 +87,6 @@ def _format_date_divider(dt: datetime) -> str:
     return f"{d.strftime('%Y-%m-%d')} {day_names[d.weekday()]}"
 
 
-# ── Batch rendering constants ────────────────────────────────────────────
-
-INITIAL_BATCH_SIZE = 30   # Cards rendered on first load
-LAZY_BATCH_SIZE = 20      # Cards appended per scroll-to-bottom event
-
-
-def _prepare_render_batches(
-    sessions: list,
-    initial_size: int = INITIAL_BATCH_SIZE,
-) -> tuple[list, list]:
-    """Split a session list into initial + remaining batches.
-
-    The initial batch is rendered immediately; remaining batches
-    are appended lazily when the user scrolls to the bottom.
-
-    Args:
-        sessions: Full sorted list of sessions to display.
-        initial_size: Number of sessions in the first batch.
-
-    Returns:
-        (initial_batch, remaining) — both preserving original order.
-    """
-    return sessions[:initial_size], sessions[initial_size:]
-
-
 def _build_lineage_trees(
     sessions: list[SessionInfo],
     lineage_types: dict[str, str],
@@ -300,108 +275,6 @@ class SessionListPanel(VerticalScroll):
         self._selected_id: str | None = None
         self._active_filter: Optional[Status] = None  # None = ALL
         self._filter_bar: FilterBar | None = None
-        # Batch rendering state
-        self._pending_trees: list[list[SessionInfo]] = []
-        self._rendered_count: int = 0
-        self._is_loading_more: bool = False
-        self._fork_parents: set[str] = set()
-
-    def _ordered_cards(self) -> list[SessionCard]:
-        """Return rendered cards in the same order as the UI."""
-        return list(self.query(SessionCard))
-
-    def _select_card_at(self, index: int) -> None:
-        """Select card at a rendered index and keep it visible."""
-        cards = self._ordered_cards()
-        if not cards:
-            self._selected_id = None
-            return
-
-        index = max(0, min(index, len(cards) - 1))
-        card = cards[index]
-        self.select_session(card.session.session_id)
-
-        try:
-            self.scroll_to_widget(card, animate=False)
-        except Exception:
-            pass
-
-    def _move_selection(self, delta: int) -> None:
-        """Move the keyboard selection by one rendered card."""
-        cards = self._ordered_cards()
-        if not cards:
-            return
-
-        if self._selected_id is None:
-            index = 0 if delta >= 0 else len(cards) - 1
-            self._select_card_at(index)
-            return
-
-        current_index = next(
-            (
-                i for i, card in enumerate(cards)
-                if card.session.session_id == self._selected_id
-            ),
-            None,
-        )
-        if current_index is None:
-            self._select_card_at(0)
-            return
-
-        next_index = current_index + delta
-        if next_index >= len(cards) and self._pending_trees:
-            self._load_next_batch()
-            cards = self._ordered_cards()
-
-        self._select_card_at(next_index)
-
-    def _open_selected_session(self) -> None:
-        """Bubble the currently selected session upward."""
-        if self._selected_id is None:
-            self._move_selection(1)
-        if self._selected_id is None:
-            return
-
-        for card in self._ordered_cards():
-            if card.session.session_id == self._selected_id:
-                self.post_message(self.SessionSelected(card.session))
-                return
-
-    def on_focus(self) -> None:
-        """Ensure keyboard users always land on a concrete selection."""
-        if self._selected_id is None and self._ordered_cards():
-            self._select_card_at(0)
-
-    def key_down(self) -> None:
-        """Select the next rendered session card."""
-        self._move_selection(1)
-
-    def key_up(self) -> None:
-        """Select the previous rendered session card."""
-        self._move_selection(-1)
-
-    def key_enter(self) -> None:
-        """Open the currently selected session."""
-        self._open_selected_session()
-
-    def show_loading(self, count: int = 8) -> None:
-        """Show skeleton placeholder cards while data is loading.
-
-        Called by main.py when a worktree is selected, before
-        _parse_and_display() completes.
-        """
-        self.remove_children()
-        self._rendered_count = 0
-        self._pending_trees = []
-
-        # Mount filter bar placeholder (empty counts)
-        self._filter_bar = FilterBar(classes="status-tab-bar")
-        self.mount(self._filter_bar)
-        self._filter_bar.update_state({s: 0 for s in _STATUS_ORDER}, None)
-
-        # Mount skeleton cards
-        for _ in range(count):
-            self.mount(SessionCard.skeleton())
 
     def load_sessions(
         self,
@@ -439,61 +312,42 @@ class SessionListPanel(VerticalScroll):
         return counts
 
     def _rebuild(self) -> None:
-        """Clear and rebuild: filter bar + initial batch of session cards."""
+        """Clear and rebuild: filter bar + session cards."""
         self.remove_children()
-        self._rendered_count = 0
-        self._pending_trees = []
 
         counts = self._count_by_status()
+
+        # Mount filter bar
         self._filter_bar = FilterBar(classes="status-tab-bar")
         self.mount(self._filter_bar)
         self._filter_bar.update_state(counts, self._active_filter)
 
         self._rebuild_list()
 
-        cards = self._ordered_cards()
-        if not cards:
-            self._selected_id = None
-        elif self._selected_id not in {card.session.session_id for card in cards}:
-            self._selected_id = None
-            if self.has_focus:
-                self._select_card_at(0)
+    def _pass_filter(self, session: SessionInfo) -> bool:
+        """True if this session matches the current filter."""
+        if self._active_filter is not None:
+            return session.status == self._active_filter
+        # ALL filter: include unless NOISE (unless show_noise toggled)
+        if session.status == Status.NOISE and not self._show_noise:
+            return False
+        return True
 
     def _rebuild_list(self) -> None:
-        """Render session cards in batches, grouped by lineage tree."""
-        # ── Filter ──
-        if self._active_filter is not None:
-            filtered = [
-                s for s in self._sessions
-                if s.status == self._active_filter
-            ]
-        else:
-            filtered = [
-                s for s in self._sessions
-                if s.status != Status.NOISE or self._show_noise
-            ]
+        """Render session cards grouped by lineage tree.
 
-        # ── Sort ──
-        def _sort_key(s: SessionInfo) -> tuple:
-            ts = s.last_timestamp
-            ts_val = ts.timestamp() if ts else 0
-            return (-int(s.is_running), -ts_val)
+        Strategy: Build lineage trees from the FULL session set
+        (so parent/child edges across filters are preserved), then
+        mask individual cards visible/hidden based on current filter.
+        This prevents tree fragmentation when switching status tabs.
+        """
+        # Compute filtered set for visibility masking
+        filtered_ids = {
+            s.session_id for s in self._sessions
+            if self._pass_filter(s)
+        }
 
-        filtered.sort(key=_sort_key)
-
-        # ── Fork parents ──
-        fork_parents: set[str] = set()
-        filtered_ids = {s.session_id for s in filtered}
-        if self._lineage_graph:
-            for sid, node in self._lineage_graph.items():
-                if sid in filtered_ids and node.children:
-                    for child_sid in node.children:
-                        if self._lineage_types.get(child_sid) == "fork":
-                            fork_parents.add(sid)
-                            break
-        self._fork_parents = fork_parents
-
-        if not filtered:
+        if not filtered_ids:
             label = self._active_filter.value if self._active_filter else "matching"
             self.mount(
                 Static(
@@ -503,35 +357,47 @@ class SessionListPanel(VerticalScroll):
             )
             return
 
-        # ── Build all lineage trees ──
-        all_trees = _build_lineage_trees(filtered, self._lineage_types, self._lineage_graph)
+        # Identify Fork Points (sessions with at least one child of type 'fork')
+        fork_parents: set[str] = set()
+        if self._lineage_graph:
+            for sid, node in self._lineage_graph.items():
+                if node.children:
+                    for child_sid in node.children:
+                        if self._lineage_types.get(child_sid) == "fork":
+                            fork_parents.add(sid)
+                            break
 
-        # ── Split into initial + pending batches ──
-        initial_trees, remaining_trees = _prepare_render_batches(
-            all_trees, initial_size=INITIAL_BATCH_SIZE,
-        )
-        self._pending_trees = remaining_trees
-        self._rendered_count = len(initial_trees)
+        # Build lineage trees from FULL session set — not filtered!
+        # This preserves tree topology across filter switches.
+        all_visible = [
+            s for s in self._sessions
+            if s.status != Status.NOISE or self._show_noise
+        ]
+        trees = _build_lineage_trees(all_visible, self._lineage_types, self._lineage_graph)
 
-        # ── Mount initial batch ──
-        self._mount_tree_batch(initial_trees)
+        # Sort visible sessions: running first → last_timestamp desc
+        def _sort_key(s: SessionInfo) -> tuple:
+            ts = s.last_timestamp
+            ts_val = ts.timestamp() if ts else 0
+            return (-int(s.is_running), -ts_val)
 
-        # ── Show "loading more" indicator if there are pending trees ──
-        if remaining_trees:
-            self.mount(
-                Static(
-                    f"[#78716c]  ↓ 滚动加载更多 ({len(remaining_trees)} 组) …[/]",
-                    classes="lazy-load-hint",
-                    id="lazy-load-hint",
-                )
-            )
-
-    def _mount_tree_batch(self, trees: list[list[SessionInfo]]) -> None:
-        """Mount a batch of lineage trees as session cards."""
+        # Track dates for date dividers
         prev_date = None
 
         for tree in trees:
-            newest = tree[-1]
+            # Skip trees where NO session passes the current filter
+            if not any(s.session_id in filtered_ids for s in tree):
+                continue
+
+            # Filter the tree to only include visible members for card rendering
+            visible_in_tree = [s for s in tree if s.session_id in filtered_ids]
+
+            # Use the newest visible session's date for the divider
+            visible_sorted = sorted(
+                visible_in_tree,
+                key=lambda s: (s.last_timestamp or datetime.min.replace(tzinfo=timezone.utc)).timestamp(),
+            )
+            newest = visible_sorted[-1]
             if newest.last_timestamp:
                 ts = newest.last_timestamp
                 if ts.tzinfo is None:
@@ -545,8 +411,9 @@ class SessionListPanel(VerticalScroll):
                 self.mount(DateDivider(label, classes="date-divider"))
                 prev_date = tree_date
 
-            if len(tree) == 1:
-                s = tree[0]
+            # Single visible session in tree: render as plain card
+            if len(visible_in_tree) == 1 and len(tree) == 1:
+                s = visible_in_tree[0]
                 meta = self._all_meta.get(s.session_id)
                 thought = self._last_thoughts.get(s.session_id, "")
                 ltype = self._lineage_types.get(s.session_id)
@@ -561,7 +428,7 @@ class SessionListPanel(VerticalScroll):
                 card = SessionCard(
                     s, meta=meta, last_thought=thought,
                     lineage_type=ltype,
-                    is_fork_point=(s.session_id in self._fork_parents),
+                    is_fork_point=(s.session_id in fork_parents),
                     spine_time=time_label,
                     spine_graph="━●",
                 )
@@ -569,54 +436,17 @@ class SessionListPanel(VerticalScroll):
                     card.selected = True
                 self.mount(card)
             else:
+                # Multi-session tree: use LineageGroup with visible_ids mask
                 group = LineageGroup(
                     tree_sessions=tree,
                     lineage_types=self._lineage_types,
                     all_meta=self._all_meta,
                     last_thoughts=self._last_thoughts,
-                    fork_parents=self._fork_parents,
+                    fork_parents=fork_parents,
                     selected_id=self._selected_id,
+                    visible_ids=filtered_ids,
                 )
                 self.mount(group)
-
-    def _load_next_batch(self) -> None:
-        """Append the next batch of trees when user scrolls near bottom."""
-        if not self._pending_trees or self._is_loading_more:
-            return
-
-        self._is_loading_more = True
-
-        # Remove the hint widget
-        try:
-            hint = self.query_one("#lazy-load-hint")
-            hint.remove()
-        except Exception:
-            pass
-
-        # Take next batch
-        batch = self._pending_trees[:LAZY_BATCH_SIZE]
-        self._pending_trees = self._pending_trees[LAZY_BATCH_SIZE:]
-        self._rendered_count += len(batch)
-
-        self._mount_tree_batch(batch)
-
-        # Re-add hint if more pending
-        if self._pending_trees:
-            self.mount(
-                Static(
-                    f"[#78716c]  ↓ 滚动加载更多 ({len(self._pending_trees)} 组) …[/]",
-                    classes="lazy-load-hint",
-                    id="lazy-load-hint",
-                )
-            )
-
-        self._is_loading_more = False
-
-    def on_scroll_down(self) -> None:
-        """Textual scroll event — load more cards when near bottom."""
-        # Check if we're near the bottom (within 5 lines)
-        if self.scroll_offset.y + self.size.height >= self.virtual_size.height - 5:
-            self._load_next_batch()
 
     def toggle_noise(self) -> None:
         """Toggle visibility of NOISE sessions."""
@@ -638,3 +468,64 @@ class SessionListPanel(VerticalScroll):
         """Handle filter bar click — switch to new filter."""
         self._active_filter = event.status
         self._rebuild()
+
+    # ── Keyboard-first navigation ──────────────────────────────────────
+
+    def move_cursor(self, delta: int) -> "SessionInfo | None":
+        """Move keyboard cursor by delta. Returns new target or None."""
+        cards = list(self.query(SessionCard))
+        if not cards:
+            return None
+        current_idx = next(
+            (i for i, c in enumerate(cards) if c.selected), -1,
+        )
+        if current_idx == -1:
+            new_idx = 0 if delta > 0 else len(cards) - 1
+        else:
+            new_idx = max(0, min(len(cards) - 1, current_idx + delta))
+        if new_idx == current_idx:
+            return None
+        for i, c in enumerate(cards):
+            c.selected = (i == new_idx)
+        target_card = cards[new_idx]
+        target_card.scroll_visible(animate=False)
+        return target_card.session
+
+    def move_cursor_to(self, position: str) -> "SessionInfo | None":
+        """Move cursor to 'top' or 'bottom'."""
+        cards = list(self.query(SessionCard))
+        if not cards:
+            return None
+        target = cards[0] if position == "top" else cards[-1]
+        for c in cards:
+            c.selected = (c is target)
+        target.scroll_visible(animate=False)
+        return target.session
+
+    def move_cursor_page(self, direction: int) -> "SessionInfo | None":
+        """Move cursor by one page. direction: -1 = up, +1 = down."""
+        visible_count = max(1, self.size.height // 5)
+        return self.move_cursor(direction * visible_count)
+
+    def confirm_selection(self) -> "SessionInfo | None":
+        """Called by Enter key — emit SessionSelected for the cursored card."""
+        cards = list(self.query(SessionCard))
+        selected_card = next((c for c in cards if c.selected), None)
+        if selected_card is None and cards:
+            selected_card = cards[0]
+            selected_card.selected = True
+        if selected_card is None:
+            return None
+        self.post_message(self.SessionSelected(selected_card.session))
+        return selected_card.session
+
+    def render_title_counter(self) -> str:
+        """Return 'Sessions (N of M)' string for the panel title."""
+        cards = list(self.query(SessionCard))
+        total = len(cards)
+        if total == 0:
+            return " Sessions (0)"
+        current_idx = next(
+            (i for i, c in enumerate(cards) if c.selected), 0,
+        )
+        return f" Sessions ({current_idx + 1} of {total})"

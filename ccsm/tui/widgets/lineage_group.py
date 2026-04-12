@@ -67,6 +67,7 @@ class LineageGroup(Vertical):
         fork_parents: set[str] | None = None,
         selected_id: str | None = None,
         max_visible: int = _DEFAULT_VISIBLE,
+        visible_ids: set[str] | None = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -78,26 +79,40 @@ class LineageGroup(Vertical):
         self._selected_id = selected_id
         self._max_visible = max_visible
         self._expanded = False
+        self._visible_ids = visible_ids  # Filter mask: only show these sessions
 
     def compose(self) -> ComposeResult:
         """Render the tree: newest first, oldest last (indented).
 
         Order: newest → oldest (top → bottom)
         Indent: newest = 0, older = step-1, oldest = step-2
+
+        When visible_ids is set, only sessions in that set are rendered
+        (the tree topology is preserved in _sessions for other uses).
         """
         if not self._sessions:
             return
 
-        total = len(self._sessions)
+        # Apply visibility mask if present
+        display_sessions = self._sessions
+        if self._visible_ids is not None:
+            display_sessions = [
+                s for s in self._sessions
+                if s.session_id in self._visible_ids
+            ]
+        if not display_sessions:
+            return
+
+        total = len(display_sessions)
         hidden_count = max(0, total - self._max_visible)
 
-        # _sessions is sorted ascending (oldest first).
+        # display_sessions is sorted ascending (oldest first).
         # We want to DISPLAY newest first, so reverse for rendering.
         if self._expanded or hidden_count == 0:
-            visible = list(reversed(self._sessions))
+            visible = list(reversed(display_sessions))
         else:
             # Take newest N from the end, then reverse for display
-            visible = list(reversed(self._sessions[-self._max_visible:]))
+            visible = list(reversed(display_sessions[-self._max_visible:]))
 
         # Separate fork sessions from main trunk
         trunk_sessions = []

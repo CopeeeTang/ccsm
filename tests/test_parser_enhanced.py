@@ -1,4 +1,4 @@
-"""Tests for parse_session_timestamps() and parse_session_complete() in ccsm.core.parser."""
+"""Tests for parse_session_timestamps() in ccsm.core.parser."""
 
 from __future__ import annotations
 
@@ -112,70 +112,3 @@ def test_parse_timestamps_with_compact():
     assert result.compact_count == 1
     assert result.first_message_at == datetime(2026, 4, 1, 8, 0, 0, tzinfo=timezone.utc)
     assert result.last_message_at == datetime(2026, 4, 1, 14, 0, 0, tzinfo=timezone.utc)
-
-
-# ─── Tests: parse_session_complete ──────────────────────────────────────────
-
-from ccsm.core.parser import parse_session_complete
-
-
-def _write_jsonl_complete(lines: list[dict]) -> Path:
-    """Helper: write a list of dicts as JSONL to a temp file."""
-    f = tempfile.NamedTemporaryFile(suffix=".jsonl", delete=False, mode="w")
-    for line in lines:
-        f.write(json.dumps(line) + "\n")
-    f.close()
-    return Path(f.name)
-
-
-def test_parse_session_complete_returns_three_tuple():
-    """parse_session_complete returns (SessionInfo, LineageSignals, list[JSONLMessage])."""
-    from ccsm.core.lineage import LineageSignals
-    from ccsm.models.session import JSONLMessage
-
-    path = _write_jsonl_complete([
-        {"sessionId": "test-sess-1", "type": "user", "uuid": "u1", "message": {"content": "hello world"}, "timestamp": "2026-04-01T10:00:00Z"},
-        {"type": "assistant", "uuid": "a1", "message": {"content": "hi there"}, "timestamp": "2026-04-01T10:01:00Z"},
-        {"type": "user", "uuid": "u2", "message": {"content": "continue"}, "timestamp": "2026-04-01T10:02:00Z"},
-        {"type": "assistant", "uuid": "a2", "message": {"content": "sure thing"}, "timestamp": "2026-04-01T10:03:00Z"},
-    ])
-
-    info, signals, last_msgs = parse_session_complete(path)
-
-    # SessionInfo checks
-    assert info.session_id == "test-sess-1"
-    assert info.message_count >= 4
-    assert info.first_user_content is not None
-
-    # LineageSignals checks
-    assert isinstance(signals, LineageSignals)
-    assert signals.first_message_at is not None
-
-    # Last assistant messages check
-    assert len(last_msgs) >= 1
-    assert last_msgs[-1].content == "sure thing"
-
-    path.unlink()
-
-
-def test_parse_session_complete_single_read(monkeypatch):
-    """parse_session_complete should only call _read_lines once."""
-    call_count = 0
-    import ccsm.core.parser as parser_mod
-    original_read = parser_mod._read_lines
-
-    def counting_read(p):
-        nonlocal call_count
-        call_count += 1
-        return original_read(p)
-
-    monkeypatch.setattr(parser_mod, "_read_lines", counting_read)
-
-    path = _write_jsonl_complete([
-        {"sessionId": "sess-io-test", "type": "user", "uuid": "u1", "message": {"content": "test"}, "timestamp": "2026-04-01T10:00:00Z"},
-        {"type": "assistant", "uuid": "a1", "message": {"content": "reply"}, "timestamp": "2026-04-01T10:01:00Z"},
-    ])
-
-    parse_session_complete(path)
-    assert call_count == 1, f"Expected 1 file read, got {call_count}"
-    path.unlink()

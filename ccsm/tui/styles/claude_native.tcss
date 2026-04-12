@@ -24,10 +24,10 @@ Screen {
     width: 100%;
 }
 
-/* ── Left Panel: Worktree Tree ──────────────────────────────────────────── */
+/* ── Column 1: Worktree Tree (15%) ─────────────────────────────────────── */
 
 #worktree-panel {
-    width: 20%;
+    width: 15%;
     min-width: 18;
     background: #1e1d1c;
     border-right: solid #3a3835;
@@ -65,12 +65,32 @@ Screen {
     background: #d97757 10%;
 }
 
-/* ── Right Panel: Session List (80% width) ────────────────────────────── */
+/* ── Column 2: Session List (55%) ──────────────────────────────────────── */
 
 #session-panel {
-    width: 80%;
+    width: 55%;
     background: #1e1d1c;
+    border-right: solid #3a3835;
     padding: 0;
+}
+
+/* ── Column 3: Inline Detail (30%) ─────────────────────────────────────── */
+
+#detail-panel {
+    width: 30%;
+    background: #141413;
+    padding: 0;
+}
+
+#detail-panel .panel-title {
+    dock: top;
+    height: 3;
+    content-align: center middle;
+    background: #141413;
+    color: #78716c;
+    text-style: bold;
+    border-bottom: solid #3a3835;
+    padding: 0 1;
 }
 
 #session-panel .panel-title {
@@ -109,18 +129,6 @@ Screen {
 .session-card.-selected {
     background: #d97757 12%;
     border-left: tall #d97757;
-}
-
-/* ── Skeleton Card (loading shimmer placeholder) ────────────────── */
-
-.session-card.-loading {
-    height: 4;
-    max-height: 4;
-}
-
-.card-skeleton-line {
-    color: #3a3835;
-    text-opacity: 60%;
 }
 
 /* Spine gutter: fixed-width time + graph connector */
@@ -192,19 +200,6 @@ Screen {
     layout: horizontal;
     height: 1;
     width: 100%;
-}
-
-/* Flattened card lines (replaces multi-widget title/intent rows) */
-.card-title-line {
-    width: 1fr;
-    height: 1;
-    content-align: left middle;
-}
-
-.card-intent-line {
-    width: 1fr;
-    height: 1;
-    content-align: left middle;
 }
 
 .card-intent {
@@ -285,32 +280,7 @@ Screen {
     border-bottom: solid #3a3835;
 }
 
-/* ── Drawer Overlay (centered modal) ──────────────────────────────────── */
-
-SessionDetailDrawer {
-    align: center middle;
-}
-
-#drawer-panel {
-    width: 70%;
-    height: 90%;
-    background: #121110;
-    border: solid #d97757;
-    padding: 0;
-}
-
-.drawer-title {
-    dock: top;
-    height: 3;
-    content-align: center middle;
-    background: #141413;
-    color: #78716c;
-    text-style: bold;
-    border-bottom: solid #3a3835;
-    padding: 0 1;
-}
-
-/* ── Detail Content (inside Drawer) ────────────────────────────────────── */
+/* ── Detail Content (inside inline detail panel) ───────────────────────── */
 
 #detail-content {
     background: #121110;
@@ -415,16 +385,6 @@ SessionDetailDrawer {
     color: #e8b96a;
 }
 
-/* ── Session Identity Card (panel border) ───────────────────────── */
-
-.det-session-card {
-    margin: 0 1 1 1;
-    padding: 1;
-    height: auto;
-    border: panel #3a3835;
-    background: #1e1d1c;
-}
-
 /* ── AI Digest Section (visually prominent, always expanded) ─────── */
 
 .det-digest-section {
@@ -494,34 +454,8 @@ SessionDetailDrawer {
     color: #b0aea5;
 }
 
-/* ── Summary Intent (block-quote style) ───────────────────────────────── */
+/* ── Chat Bubble (Last Exchange) ──────────────────────────────────────── */
 
-.det-summary-intent {
-    border-left: solid #d97757 40%;
-    padding: 0 1;
-    margin: 0 2;
-    color: #b0aea5;
-    text-style: italic;
-    height: auto;
-}
-
-/* ── Chat Style (Last Exchange — Brief UI aligned) ──────────────────── */
-
-.det-chat-label {
-    height: 1;
-    margin: 1 0 0 0;
-    padding: 0;
-}
-
-.det-chat-text {
-    height: auto;
-    max-height: 15;
-    margin: 0 0 0 0;
-    padding: 0 0 0 2;
-    overflow-y: auto;
-}
-
-/* Legacy chat-row/avatar styles (kept for compatibility, used nowhere now) */
 .det-chat-row {
     height: auto;
     margin: 0 0 1 0;
@@ -550,14 +484,6 @@ SessionDetailDrawer {
     height: auto;
     max-height: 20;
     overflow-y: auto;
-}
-
-/* ── Background Tasks ───────────────────────────────────────────────── */
-
-.det-task-item {
-    height: auto;
-    margin: 0 0 0 0;
-    padding: 0;
 }
 
 /* ── Focus Indicators ───────────────────────────────────────────────────── */
@@ -641,13 +567,6 @@ SessionDetailDrawer {
     height: auto;
 }
 
-/* ── Swimlane in Session Panel ──────────────────────────────────────────── */
-
-#session-list-container Swimlane {
-    padding: 1 1;
-    height: auto;
-}
-
 /* ── Collapsible Sections (WHAT WAS DONE, LAST EXCHANGE) ───────────────── */
 
 #detail-content Collapsible {
@@ -722,8 +641,8 @@ SessionDetailDrawer {
 .-light-theme .lineage-expand-bar { background: #faf9f5; color: #5e5c54; }
 .-light-theme .lineage-expand-bar:hover { color: #c97040; background: rgba(217,119,87, 0.08); }
 
-.-light-theme #drawer-panel { background: #fdfdfc; border: solid #c97040; }
-.-light-theme .drawer-title { background: #faf9f5; color: #5e5c54; border-bottom: solid #e6e4df; }
+.-light-theme #detail-panel { background: #faf9f5; }
+.-light-theme #detail-panel .panel-title { background: #faf9f5; color: #5e5c54; border-bottom: solid #e6e4df; }
 .-light-theme #detail-content { background: #fdfdfc; }
 
 .-light-theme .detail-section-body { color: #141413; }
@@ -736,7 +655,6 @@ SessionDetailDrawer {
 .-light-theme .det-breakpoint-section { background: rgba(217,119,87, 0.08); }
 .-light-theme .det-breakpoint-badge { background: #c97040; color: #ffffff; }
 .-light-theme .detail-breakpoint-body { color: #141413; }
-.-light-theme .det-session-card { background: #ffffff; border: panel #e6e4df; }
 .-light-theme .det-digest-section { background: rgba(106,155,204, 0.06); border: panel #6a9bcc 40%; }
 
 .-light-theme #detail-content Collapsible { background: #faf9f5; }
@@ -745,11 +663,6 @@ SessionDetailDrawer {
 .-light-theme .det-chat-msg { background: #faf9f5; border: round #e6e4df; }
 .-light-theme .det-chat-avatar { color: #141413; }
 .-light-theme .det-chat-avatar-user { color: #141413; }
-
-/* Brief chat-style light overrides */
-.-light-theme .det-chat-text {
-    color: #44403c;
-}
 
 .-light-theme #header-bar { background: #faf9f5; color: #c97040; }
 .-light-theme #footer-bar { background: #faf9f5; color: #5e5c54; }
@@ -886,9 +799,7 @@ SessionDetailDrawer {
 
 /* Hide intent for deep history for density */
 .history-step-2 .card-row-intent,
-.history-step-3 .card-row-intent,
-.history-step-2 .card-intent-line,
-.history-step-3 .card-intent-line {
+.history-step-3 .card-row-intent {
     display: none;
 }
 
@@ -907,15 +818,4 @@ SessionDetailDrawer {
 
 .card-spine-graph {
     display: none;
-}
-
-/* ── Lazy load hint ──────────────────────────────────────────────────── */
-
-.lazy-load-hint {
-    width: 1fr;
-    height: 1;
-    text-align: center;
-    color: #78716c;
-    background: #1e1d1c;
-    padding: 0 1;
 }

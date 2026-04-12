@@ -1,13 +1,16 @@
-"""Right panel: Session detail widget — recovery-first design.
+"""Right panel: Session detail widget — simplified 4-zone layout.
 
-Layout priority (top to bottom, progressive disclosure):
-1. 📋 SESSION — compact metadata card (always expanded)
-2. 🧠 AI DIGEST — five-dimension structured summary (always expanded)
-3. 🧭 MILESTONES — decision points / phase progress (always expanded)
-4. 📝 CONTEXT SUMMARY — compact summary details (collapsible, collapsed)
-5. 📍 WHERE YOU LEFT OFF — breakpoint detail (collapsible, collapsed)
-6. 🔧 WHAT WAS DONE — tool_use operations (collapsible, collapsed)
-7. 💬 LAST EXCHANGE — last user+assistant pair (collapsible, expanded)
+Layout (top to bottom, after Part 3 simplification):
+1. AI DIGEST — four-dimension structured summary (always expanded)
+2. MILESTONES — decision points / phase progress (always expanded)
+3. WHAT WAS DONE — tool_use operations (collapsible, collapsed)
+4. LAST EXCHANGE — last user+assistant pair + recovery context
+                   (collapsible, collapsed; merged with former "where you left off")
+
+Removed in Part 3:
+  - SESSION card header (redundant with list card)
+  - CONTEXT SUMMARY (overlaps with digest)
+  - WHERE YOU LEFT OFF standalone (merged into LAST EXCHANGE)
 
 Data source philosophy: mine JSONL first (zero cost), AI second (on demand).
 """
@@ -25,7 +28,6 @@ from textual.widgets import Collapsible, Markdown, Static
 from ccsm.models.session import (
     Breakpoint,
     CompactSummaryParsed,
-    JSONLMessage,
     Milestone,
     MilestoneItem,
     MilestoneStatus,
@@ -36,8 +38,6 @@ from ccsm.models.session import (
     SessionMeta,
     SessionSummary,
     Status,
-    Workflow,
-    WorkflowCluster,
 )
 from ccsm.tui.widgets.session_card import _relative_time
 
@@ -104,13 +104,6 @@ def _strip_emoji_prefix(label: str) -> str:
     return stripped.strip() or label
 
 
-def _format_chat_time(dt: Optional[datetime]) -> str:
-    """Format datetime as HH:MM for chat-style labels."""
-    if dt is None:
-        return ""
-    return dt.strftime("%H:%M")
-
-
 def _clean_intent_text(text: str) -> str:
     """Clean numbered/listed text into concise intent form.
 
@@ -135,8 +128,7 @@ class SessionDetail(VerticalScroll):
         self._session: Optional[SessionInfo] = None
         self._meta: Optional[SessionMeta] = None
         self._summary: Optional[SessionSummary] = None
-        self._last_replies: list[str] = []          # 保留旧字段兼容
-        self._last_reply_msgs: list[JSONLMessage] = []  # 新增：完整消息对象
+        self._last_replies: list[str] = []
         self._detail_data: Optional[SessionDetailData] = None
         self._compact_parsed: Optional[CompactSummaryParsed] = None
 
@@ -145,7 +137,7 @@ class SessionDetail(VerticalScroll):
         session: SessionInfo,
         meta: Optional[SessionMeta] = None,
         summary: Optional[SessionSummary] = None,
-        last_replies: list | None = None,
+        last_replies: Optional[list[str]] = None,
         detail_data: Optional[SessionDetailData] = None,
         compact_parsed: Optional[CompactSummaryParsed] = None,
     ) -> None:
@@ -153,16 +145,7 @@ class SessionDetail(VerticalScroll):
         self._session = session
         self._meta = meta
         self._summary = summary
-        # Accept both str list (legacy) and JSONLMessage list (new)
-        self._last_replies = []
-        self._last_reply_msgs = []
-        if last_replies:
-            for item in last_replies:
-                if isinstance(item, JSONLMessage):
-                    self._last_reply_msgs.append(item)
-                    self._last_replies.append(item.content)
-                elif isinstance(item, str):
-                    self._last_replies.append(item)
+        self._last_replies = last_replies or []
         self._detail_data = detail_data
         self._compact_parsed = compact_parsed
         self._rebuild()
@@ -172,31 +155,11 @@ class SessionDetail(VerticalScroll):
         self.remove_children()
         self.mount(Static("Select a session to view details", classes="empty-state"))
 
-    def show_workflows(
-        self,
-        cluster: Optional[WorkflowCluster],
-        session_statuses: Optional[dict[str, Status]] = None,
-    ) -> None:
-        """Display workflow overview (when no individual session is selected)."""
-        self._session = None  # Clear selected session state
-        self.remove_children()
-        self._mount_workflow_overview(cluster, session_statuses)
-
-    def show_workflow_detail(
-        self,
-        workflow: Workflow,
-        session_statuses: Optional[dict[str, Status]] = None,
-    ) -> None:
-        """Display detail for a selected workflow (from swimlane click)."""
-        self._session = None  # Clear selected session state
-        self.remove_children()
-        self._mount_single_workflow_detail(workflow, session_statuses)
-
     def _rebuild(self) -> None:
-        """Rebuild detail panel with progressive disclosure layout.
+        """Rebuild detail panel — 4 core sections after Part 3 simplification.
 
-        Always expanded: SESSION card + AI DIGEST + MILESTONES
-        Collapsed by default: CONTEXT, WHERE LEFT OFF, WHAT WAS DONE, LAST EXCHANGE
+        Always expanded: AI DIGEST + MILESTONES
+        Collapsed by default: WHAT WAS DONE, LAST EXCHANGE
         """
         self.remove_children()
         s = self._session
@@ -204,84 +167,17 @@ class SessionDetail(VerticalScroll):
             self.mount(Static("Select a session to view details", classes="empty-state"))
             return
 
-        # ── 1. Session Identity (card style, always expanded) ──────
-        self._mount_session_card(s)
-
-        # ── 2. AI Digest (five-dimension, always expanded) ─────────
+        # ── 1. AI Digest (always visible) ──
         self._mount_digest_section()
 
-        # ── 3. Milestones (decision points, always expanded) ───────
+        # ── 2. Milestones (always visible) ──
         self._mount_milestones_section()
 
-        # ── 4. Context Summary (collapsible, collapsed) ────────────
-        self._mount_context_summary_section()
-
-        # ── 5. Where You Left Off (collapsible, collapsed) ─────────
-        self._mount_where_left_off_section()
-
-        # ── 6. What Was Done (collapsible, collapsed) ──────────────
+        # ── 3. What was done (collapsed, expandable) ──
         self._mount_what_was_done_section()
 
-        # ── 6.5 Background Tasks (collapsible, expanded if tasks exist) ──
-        self._mount_background_tasks_section()
-
-        # ── 7. Last Exchange (collapsible, expanded — high-value for recovery) ──
+        # ── 4. Last Exchange (collapsed, expandable, merged with where_left_off) ──
         self._mount_last_exchange_section()
-
-    # ── SESSION IDENTITY (card style with panel border) ──────────
-
-    def _mount_session_card(self, s: SessionInfo) -> None:
-        """Mount session identity as a bordered card."""
-        section = Vertical(classes="detail-section det-session-card")
-        self.mount(section)
-
-        title = s.display_title
-        if self._meta and self._meta.name:
-            title = self._meta.name
-        title = rich_escape(title)
-
-        # Status tag inline
-        status_tag, _ = _STATUS_TAGS.get(s.status, (s.status.value, "#78716c"))
-
-        K = "#b0aea5"
-        dur = _format_duration(s.duration_seconds)
-        msg_info = f"{dur} · {s.message_count} msg"
-
-        model_str = s.model_name or "—"
-        if model_str.startswith("claude-"):
-            model_str = model_str[7:]
-
-        token_str = ""
-        if s.total_input_tokens > 0 or s.total_output_tokens > 0:
-            token_str = f" · {_format_tokens(s.total_input_tokens)}↑ {_format_tokens(s.total_output_tokens)}↓"
-
-        running = "  [bold #788c5d]⚡ Running[/]" if s.is_running else ""
-
-        # Large title (brand orange)
-        section.mount(Static(
-            f"  [#d97757 bold]{title}[/]  {status_tag}{running}",
-            classes="detail-section-title",
-        ))
-
-        # Compact metadata line
-        section.mount(Static(
-            f"  [{K}]{msg_info} · {rich_escape(model_str)}{token_str}[/]",
-            classes="detail-section-body",
-        ))
-
-        # Intent as block-quote (det-summary-intent style)
-        ai_intent = self._meta.ai_intent if self._meta else None
-        intent_text = ai_intent or (s.first_user_content or "")
-        if intent_text:
-            content = intent_text.replace("\n", " ").strip()
-            if not ai_intent:
-                content = _clean_intent_text(content)
-            if len(content) > 120:
-                content = content[:119] + "…"
-            section.mount(Static(
-                f"  💡 [{K} italic]\"{rich_escape(content)}\"[/]",
-                classes="det-summary-intent",
-            ))
 
     # ── AI DIGEST (five-dimension structured summary) ──────────
 
@@ -292,7 +188,7 @@ class SessionDetail(VerticalScroll):
         section = Vertical(classes="detail-section det-digest-section")
         self.mount(section)
         section.mount(Static(
-            "  [#a8a29e]🧠 AI DIGEST[/]",
+            "  [#a8a29e bold]AI DIGEST[/]",
             classes="detail-section-title",
         ))
 
@@ -309,22 +205,22 @@ class SessionDetail(VerticalScroll):
         lines: list[str] = []
 
         # Progress
-        lines.append(f"  [#788c5d bold]📊 Progress[/]  [{V}]{rich_escape(digest.progress)}[/]")
+        lines.append(f"  [#788c5d bold]Progress[/]  [{V}]{rich_escape(digest.progress)}[/]")
 
         # Decisions
         decisions = digest.decisions if digest.decisions else []
         if decisions:
-            lines.append(f"  [#d97757 bold]⚖ Decisions[/]")
+            lines.append(f"  [#d97757 bold]Decisions[/]")
             for dec in decisions:
                 lines.append(f"    [#d97757]•[/] [{V}]{rich_escape(dec)}[/]")
 
         # Breakpoint (visually prominent)
-        lines.append(f"  [#e87b7b bold]⏸ Breakpoint[/] [{V}]{rich_escape(digest.breakpoint)}[/]")
+        lines.append(f"  [#e87b7b bold]Breakpoint[/] [{V}]{rich_escape(digest.breakpoint)}[/]")
 
         # Todo
         todo = digest.todo if digest.todo else digest.next_steps or []
         if todo:
-            lines.append(f"  [#a78bfa bold]→ Todo[/]")
+            lines.append(f"  [#a78bfa bold]Todo[/]")
             for item in todo:
                 lines.append(f"    [#a78bfa]•[/] [{V}]{rich_escape(item)}[/]")
 
@@ -340,7 +236,7 @@ class SessionDetail(VerticalScroll):
         section = Vertical(classes="detail-section")
         self.mount(section)
         section.mount(Static(
-            "  [#a8a29e]🧭 MILESTONES[/]",
+            "  [#a8a29e bold]MILESTONES[/]",
             classes="detail-section-title",
         ))
 
@@ -413,143 +309,6 @@ class SessionDetail(VerticalScroll):
                     classes="det-ms-sub",
                 ))
 
-    # ── CONTEXT SUMMARY (2nd priority) ────────────────────────
-
-    def _mount_context_summary_section(self) -> None:
-        """Mount context summary — collapsible, collapsed by default."""
-        collapsible = Collapsible(title="📝 CONTEXT SUMMARY", collapsed=True)
-        self.mount(collapsible)
-
-        lines: list[str] = []
-        V = "#e8e6dc"
-        K = "#b0aea5"
-
-        has_compact = self._compact_parsed and self._compact_parsed.primary_request
-
-        if has_compact:
-            cp = self._compact_parsed
-
-            # Primary Request (truncated)
-            if cp.primary_request:
-                req = cp.primary_request.replace("\n", " ").strip()
-                if len(req) > 120:
-                    req = req[:117] + "…"
-                lines.append(f"  [{V}]{rich_escape(req)}[/]")
-                lines.append("")
-
-            # Key Technical Concepts (condensed)
-            if cp.key_concepts:
-                concepts = cp.key_concepts.strip()
-                # Extract first 3 bullet items
-                concept_items = []
-                for line in concepts.split("\n"):
-                    line = line.strip()
-                    if line.startswith(("-", "*", "•")):
-                        cleaned = _re.sub(r"^[-*•]\s+", "", line).strip()
-                        # Extract bold terms
-                        bold_match = _re.match(r"\*\*(.+?)\*\*", cleaned)
-                        if bold_match:
-                            concept_items.append(bold_match.group(1))
-                        elif len(cleaned) > 3:
-                            concept_items.append(cleaned[:40])
-                    if len(concept_items) >= 5:
-                        break
-
-                if concept_items:
-                    tags = " · ".join(f"[#6a9bcc]{rich_escape(c)}[/]" for c in concept_items)
-                    lines.append(f"  [{K}]Concepts[/] {tags}")
-
-        elif self._summary and self._summary.description:
-            # Fallback: AI-generated description
-            desc = self._summary.description
-            if len(desc) > 300:
-                desc = desc[:297] + "…"
-            lines.append(f"  [{V}]{rich_escape(desc)}[/]")
-
-            # Key insights
-            if self._summary.key_insights:
-                lines.append("")
-                for insight in self._summary.key_insights[:3]:
-                    lines.append(f"    [#6a9bcc]•[/] {rich_escape(insight)}")
-
-        else:
-            # L3 fallback: use AI intent or first user content as minimal context
-            s = self._session
-            ai_intent = self._meta.ai_intent if self._meta else None
-            fallback_text = ai_intent or (s.first_user_content if s else None)
-            if fallback_text:
-                content = fallback_text.replace("\n", " ").strip()
-                if not ai_intent:
-                    content = _clean_intent_text(content)
-                if len(content) > 200:
-                    content = content[:197] + "…"
-                source = "AI" if ai_intent else "首次请求"
-                lines.append(f"  [{K}]{source}[/] [{V}]{rich_escape(content)}[/]")
-                lines.append("")
-                lines.append(f"  [{K} italic]Press [/][bold #d97757]s[/][{K} italic] for detailed AI summary.[/]")
-            else:
-                lines.append(f"  [{K} italic]No context summary. Press [/][bold #d97757]s[/][{K} italic] to generate.[/]")
-
-        collapsible.mount(Static("\n".join(lines), classes="detail-section-body"))
-
-    # ── WHERE YOU LEFT OFF (collapsible, collapsed by default) ──
-
-    def _mount_where_left_off_section(self) -> None:
-        """Mount the breakpoint / last-prompt section — collapsible."""
-        collapsible = Collapsible(title="📍 WHERE YOU LEFT OFF", collapsed=True)
-        self.mount(collapsible)
-
-        s = self._session
-        dd = self._detail_data
-        lines: list[str] = []
-
-        # Last prompt (highest value — user's actual last input)
-        last_prompt = s.last_prompt if s else None
-        last_user = s.last_user_message if s else None
-
-        if last_prompt:
-            prompt_text = last_prompt.replace("\n", " ")
-            if len(prompt_text) > 120:
-                prompt_text = prompt_text[:117] + "…"
-
-            lines.append(f"  [#d97757]🗣[/]  {rich_escape(prompt_text)}")
-        elif last_user:
-            user_text = last_user.replace("\n", " ")
-            if len(user_text) > 120:
-                user_text = user_text[:117] + "…"
-
-            lines.append(f"  [#d97757]🗣[/]  {rich_escape(user_text)}")
-
-        # Last AI response
-        last_ai = dd.last_assistant_msg if dd else None
-        if not last_ai and self._last_replies:
-            last_ai = self._last_replies[-1]
-
-        if last_ai:
-            ai_text = last_ai.replace("\n", " ").strip()
-            if len(ai_text) > 150:
-                ai_text = ai_text[:147] + "…"
-            lines.append(f"  [#6a9bcc]🤖[/]  [#a8a29e]{rich_escape(ai_text)}[/]")
-
-        # Breakpoint from summary
-        bp = self._summary.breakpoint if self._summary else None
-        if bp and bp.last_topic:
-            lines.append("")
-            lines.append(f"  [#788c5d bold]→ 下一步[/] {rich_escape(bp.last_topic)}")
-
-        # Last insight from AI summary
-        if self._summary and self._summary.key_insights:
-            last_insight = self._summary.key_insights[-1]
-            if len(last_insight) > 100:
-                last_insight = last_insight[:97] + "…"
-            lines.append("")
-            lines.append(f"  [#6a9bcc]💡 Insight[/] {rich_escape(last_insight)}")
-
-        if not lines:
-            lines.append("  [#78716c italic]No breakpoint data available[/]")
-
-        collapsible.mount(Static("\n".join(lines), classes="detail-section-body"))
-
     # ── WHAT WAS DONE (collapsible) ───────────────────────────
 
     def _mount_what_was_done_section(self) -> None:
@@ -572,260 +331,117 @@ class SessionDetail(VerticalScroll):
             file_names = [_re.sub(r".*/", "", f) for f in shown]  # basename only
             extra = len(dd.files_edited) - len(shown)
             suffix = f" (+{extra})" if extra > 0 else ""
-            lines.append(f"  [#788c5d]📝 Edited[/]  [{V}]{', '.join(file_names)}{suffix}[/]")
+            lines.append(f"  [#788c5d bold]Edited[/]  [{V}]{', '.join(file_names)}{suffix}[/]")
 
         if dd.commands_run:
             shown = dd.commands_run[-5:]  # Last 5 commands
             for cmd in shown:
                 cmd_short = cmd[:60] + "…" if len(cmd) > 60 else cmd
-                lines.append(f"  [#facc15]⚡ Ran[/]     [{V}]{rich_escape(cmd_short)}[/]")
+                lines.append(f"  [#facc15 bold]Ran[/]     [{V}]{rich_escape(cmd_short)}[/]")
 
         if dd.files_read:
             shown = dd.files_read[:5]
             file_names = [_re.sub(r".*/", "", f) for f in shown]
             extra = len(dd.files_read) - len(shown)
             suffix = f" (+{extra})" if extra > 0 else ""
-            lines.append(f"  [#6a9bcc]📖 Read[/]    [{V}]{', '.join(file_names)}{suffix}[/]")
+            lines.append(f"  [#6a9bcc bold]Read[/]    [{V}]{', '.join(file_names)}{suffix}[/]")
 
         if dd.agents_spawned:
             for desc in dd.agents_spawned[:3]:
                 desc_short = desc[:50] + "…" if len(desc) > 50 else desc
-                lines.append(f"  [#a855f7]🤖 Agent[/]  [{V}]{rich_escape(desc_short)}[/]")
+                lines.append(f"  [#a855f7 bold]Agent[/]   [{V}]{rich_escape(desc_short)}[/]")
 
         body = "\n".join(lines)
 
-        collapsible = Collapsible(title="🔧 WHAT WAS DONE", collapsed=True)
+        collapsible = Collapsible(title="WHAT WAS DONE", collapsed=True)
         self.mount(collapsible)
         collapsible.mount(Static(body, classes="detail-section-body"))
 
-    # ── BACKGROUND TASKS (subagent/task activity) ─────────────
+    # ── LAST EXCHANGE (Chat bubble style + recovery context) ──────
 
-    def _mount_background_tasks_section(self) -> None:
-        """Mount background tasks section — shows Agent/Task activity.
+    def _mount_last_exchange_section(self) -> None:
+        """Mount last user+assistant message pair + recovery context.
 
-        Displays subagents and structured tasks detected in the session,
-        aligned with KAIROS's task state tracking concept.
+        Merged from (formerly) _mount_where_left_off_section:
+          - Adds breakpoint.last_topic as "Next" line after the bubbles
+          - Adds key_insights[-1] as "Insight" line after the bubbles
+        Default collapsed (per user requirement). Chat-bubble rendering retained.
         """
+        from textual.containers import Horizontal
+
         dd = self._detail_data
-        if not dd or not dd.background_tasks:
+        has_exchange = bool(dd and (dd.last_user_msg or dd.last_assistant_msg))
+        has_reply = bool(self._last_replies)
+
+        # Recovery context fields (formerly in where_left_off)
+        bp = self._summary.breakpoint if self._summary else None
+        next_topic = bp.last_topic if bp else None
+        insight: Optional[str] = None
+        if self._summary and self._summary.key_insights:
+            insight = self._summary.key_insights[-1]
+
+        has_next = bool(next_topic)
+        has_insight = bool(insight)
+
+        if not any([has_exchange, has_reply, has_next, has_insight]):
             return
 
-        tasks = dd.background_tasks
-        has_active = any(t.status in ("running", "pending", "in_progress") for t in tasks)
-
-        # 有活跃任务时展开，否则折叠
-        collapsible = Collapsible(
-            title=f"🔄 BACKGROUND TASKS ({len(tasks)})",
-            collapsed=not has_active,
-        )
+        # Default collapsed — user's requirement
+        collapsible = Collapsible(title="LAST EXCHANGE", collapsed=True)
         self.mount(collapsible)
 
         V = "#e8e6dc"
         K = "#b0aea5"
 
-        _STATUS_ICONS = {
-            "pending": "[#c09553]◯[/]",       # Yellow circle — waiting
-            "in_progress": "[#788c5d]●[/]",   # Green filled — active
-            "running": "[#788c5d]●[/]",       # Green filled — active
-            "completed": "[#788c5d]✓[/]",     # Green check — done
-            "failed": "[#e87b7b]✗[/]",        # Red X — failed
-            "stopped": "[#78716c]⊘[/]",       # Gray — stopped
-            "unknown": "[#78716c]?[/]",        # Gray — unknown
-        }
-
-        for task in tasks:
-            icon = _STATUS_ICONS.get(task.status, _STATUS_ICONS["unknown"])
-            tool_badge = ""
-            if task.tool_name == "Agent":
-                tool_badge = f" [#a78bfa]⚙ agent[/]"
-            elif task.tool_name == "TaskCreate":
-                tool_badge = f" [#6b99b4]📋 task[/]"
-
-            subject = rich_escape(task.subject[:80])
-            line = f"  {icon} [{V}]{subject}[/]{tool_badge}"
-
-            if task.description:
-                desc = rich_escape(task.description[:120])
-                line += f"\n    [{K}]{desc}[/]"
-
-            collapsible.mount(Static(line, classes="det-task-item"))
-
-    # ── LAST EXCHANGE (Brief UI chat-style) ──────────────────────
-
-    def _mount_last_exchange_section(self) -> None:
-        """Mount last user+assistant exchange — Brief UI chat-style.
-
-        Renders as:
-          You  15:30
-            fix the bug in parser.ts
-
-          Claude  15:31
-            Fixed the bug — the issue was an off-by-one error...
-
-        Aligned with KAIROS Brief UI's "You"/"Claude" label + timestamp pattern.
-        """
-        dd = self._detail_data
-        has_exchange = dd and (dd.last_user_msg or dd.last_assistant_msg)
-        has_reply_msgs = bool(self._last_reply_msgs)
-        has_reply_str = bool(self._last_replies)
-
-        if not has_exchange and not has_reply_msgs and not has_reply_str:
-            return
-
-        # Default EXPANDED (not collapsed) — last exchange is high-value for recovery
-        collapsible = Collapsible(title="💬 LAST EXCHANGE", collapsed=False)
-        self.mount(collapsible)
-
-        LABEL_YOU = "#788c5d"     # Green — matches Brief UI briefLabelYou
-        LABEL_CLAUDE = "#a78bfa"  # Purple — matches Brief UI briefLabelClaude
-        TIME_DIM = "#78716c"      # Dim gray for timestamp
-        TEXT = "#e8e6dc"           # Primary text color
-        TEXT_DIM = "#b0aea5"      # Secondary text color
-
-        # ── User message ──
-        user_text = None
-        user_time = ""
-
-        if self._last_reply_msgs:
-            # Find last user message from JSONLMessage list
-            for msg in reversed(self._last_reply_msgs):
-                if msg.role == "user" and msg.content:
-                    user_text = msg.content[:400]
-                    if len(msg.content) > 400:
-                        user_text += "…"
-                    user_time = _format_chat_time(msg.timestamp)
-                    break
-        if user_text is None and dd and dd.last_user_msg:
-            user_text = dd.last_user_msg[:400]
-            if len(dd.last_user_msg) > 400:
+        # ── User bubble ──
+        if dd and dd.last_user_msg:
+            user_text = dd.last_user_msg[:300]
+            if len(dd.last_user_msg) > 300:
                 user_text += "…"
-
-        if user_text:
-            time_suffix = f"  [{TIME_DIM}]{user_time}[/]" if user_time else ""
-            collapsible.mount(Static(
-                f"  [{LABEL_YOU} bold]You[/]{time_suffix}",
-                classes="det-chat-label",
-            ))
-            collapsible.mount(Static(
-                f"    [{TEXT}]{rich_escape(user_text)}[/]",
-                classes="det-chat-text",
+            row = Horizontal(classes="det-chat-row")
+            collapsible.mount(row)
+            row.mount(Static(" YOU ", classes="det-chat-avatar det-chat-avatar-user"))
+            row.mount(Static(
+                f"[{V}]{rich_escape(user_text)}[/]",
+                classes="det-chat-msg",
             ))
 
-        # ── Claude message ──
-        ai_text = None
-        ai_time = ""
-
-        if self._last_reply_msgs:
-            # Find last assistant message from JSONLMessage list
-            for msg in reversed(self._last_reply_msgs):
-                if msg.role == "assistant" and msg.content:
-                    ai_text = msg.content[:400]
-                    if len(msg.content) > 400:
-                        ai_text += "…"
-                    ai_time = _format_chat_time(msg.timestamp)
-                    break
-        if ai_text is None and dd and dd.last_assistant_msg:
-            ai_text = dd.last_assistant_msg[:400]
-            if len(dd.last_assistant_msg) > 400:
+        # ── AI bubble ──
+        ai_text: Optional[str] = None
+        if dd and dd.last_assistant_msg:
+            ai_text = dd.last_assistant_msg[:300]
+            if len(dd.last_assistant_msg) > 300:
                 ai_text += "…"
-        elif ai_text is None and self._last_replies:
-            last = self._last_replies[-1]
-            ai_text = last[:400]
-            if len(last) > 400:
+        elif self._last_replies:
+            ai_text = self._last_replies[-1][:300]
+            if len(self._last_replies[-1]) > 300:
                 ai_text += "…"
 
         if ai_text:
-            time_suffix = f"  [{TIME_DIM}]{ai_time}[/]" if ai_time else ""
-            collapsible.mount(Static(
-                f"  [{LABEL_CLAUDE} bold]Claude[/]{time_suffix}",
-                classes="det-chat-label",
-            ))
-            collapsible.mount(Static(
-                f"    [{TEXT_DIM}]{rich_escape(ai_text)}[/]",
-                classes="det-chat-text",
+            row = Horizontal(classes="det-chat-row")
+            collapsible.mount(row)
+            row.mount(Static("  AI ", classes="det-chat-avatar"))
+            row.mount(Static(
+                f"[{K}]{rich_escape(ai_text)}[/]",
+                classes="det-chat-msg",
             ))
 
-    # ── Workflow overview (no session selected) ──────────────────
-
-    def _mount_workflow_overview(
-        self,
-        cluster: Optional[WorkflowCluster],
-        session_statuses: Optional[dict[str, Status]] = None,
-    ) -> None:
-        """Mount workflow overview section."""
-        from ccsm.tui.widgets.workflow_list import render_workflow_list
-
-        section = Vertical(classes="detail-section")
-        self.mount(section)
-
-        count = len(cluster.workflows) if cluster else 0
-        title = f"🔗 WORKFLOWS ({count})"
-        section.mount(Static(
-            f"  [#a8a29e]{title}[/]",
-            classes="detail-section-title",
-        ))
-
-        body = render_workflow_list(cluster, session_statuses)
-        section.mount(Static(body, classes="detail-section-body"))
-
-    def _mount_single_workflow_detail(
-        self,
-        workflow: Workflow,
-        session_statuses: Optional[dict[str, Status]] = None,
-    ) -> None:
-        """Mount detail for a single selected workflow."""
-        statuses = session_statuses or {}
-
-        # Title
-        name = rich_escape(workflow.display_name)
-        has_active = any(
-            statuses.get(sid) == Status.ACTIVE
-            for sid in workflow.sessions
-        )
-        if has_active:
-            title_fmt = f"[bold #788c5d]{name}[/]"
-        else:
-            title_fmt = f"[#e8e6dc bold]{name}[/]"
-
-        K = "#b0aea5"
-        V = "#e8e6dc"
-
-        lines = [
-            f"  [{K}]Workflow[/] {title_fmt}",
-            f"  [{K}]Sessions[/] [{V}]{workflow.session_count}[/]    "
-            f"[{K}]Duration[/] [{V}]{_format_duration(workflow.duration_seconds)}[/]",
-        ]
-
-        if workflow.first_timestamp:
-            ts_str = workflow.first_timestamp.strftime("%Y-%m-%d %H:%M")
-            lines.append(f"  [{K}]Started [/] [{V}]{ts_str}[/]")
-
-        if workflow.fork_branches:
-            lines.append(f"  [{K}]Forks   [/] [{V}]{len(workflow.fork_branches)}[/]")
-
-        self._mount_section("🔗 WORKFLOW", "\n".join(lines))
-
-        # Session list within workflow
-        session_lines: list[str] = []
-        for i, sid in enumerate(workflow.sessions):
-            status = statuses.get(sid, Status.DONE)
-            tag_markup, _ = _STATUS_TAGS.get(status, ("○ Done", "#78716c"))
-            prefix = "━●" if i == 0 else "━◇"
-            session_lines.append(
-                f"  [#78716c]{prefix}[/] [{V}]{sid[:12]}[/]  {tag_markup}"
-            )
-
-        # Fork sessions
-        for branch in workflow.fork_branches:
-            for sid in branch:
-                status = statuses.get(sid, Status.DONE)
-                tag_markup, _ = _STATUS_TAGS.get(status, ("○ Done", "#78716c"))
-                session_lines.append(
-                    f"  [#6a9bcc]  └─◆[/] [{V}]{sid[:12]}[/]  {tag_markup}"
+        # ── Recovery context (merged from where_left_off) ──
+        if has_next or has_insight:
+            ctx_lines: list[str] = []
+            if next_topic:
+                ctx_lines.append(
+                    f"  [#788c5d bold]Next[/] [{V}]{rich_escape(next_topic)}[/]"
                 )
-
-        if session_lines:
-            self._mount_section("📋 SESSIONS", "\n".join(session_lines))
+            if insight:
+                trunc = insight[:100] + ("…" if len(insight) > 100 else "")
+                ctx_lines.append(
+                    f"  [#6a9bcc bold]Insight[/] [{V}]{rich_escape(trunc)}[/]"
+                )
+            collapsible.mount(Static(
+                "\n".join(ctx_lines),
+                classes="detail-section-body",
+            ))
 
     # ── Generic section ──────────────────────────────────────────
 
