@@ -10,6 +10,7 @@ Compose-based layout using Textual CSS flex for perfect alignment:
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 
 from rich.markup import escape as rich_escape
@@ -21,6 +22,8 @@ from textual.widget import Widget
 from textual.widgets import Static
 
 from ccsm.models.session import SessionInfo, SessionMeta, Status, resolve_title
+
+logger = logging.getLogger(__name__)
 
 # Lineage badge colors — more prominent labels
 _LINEAGE_BADGES = {
@@ -132,21 +135,15 @@ class SessionCard(Widget):
         body_classes = "card-body"
         if self._lineage_type == "fork":
             body_classes += " -fork-body"
-            
+
         with Vertical(classes=body_classes):
             # ── Row 1: Title + status + lineage + time ──
             with Horizontal(classes="card-row-title"):
-                # Running indicator
-                running_prefix = ""
-                if s.is_running:
-                    running_prefix = "[bold #788c5d]⚡[/] "
-
-                # Title — uses canonical resolve_title priority chain
-                title = resolve_title(s, self.meta)
-                title_truncated = _truncate(title, 60)
+                # Title (with running prefix and id for update_data)
                 yield Static(
-                    f"{running_prefix}[#e8e6dc]{rich_escape(title_truncated)}[/]",
+                    self._render_title_markup(),
                     classes="card-title",
+                    id=f"ct-{self.session.session_id[:16]}",
                 )
 
                 # Status tag
@@ -156,6 +153,7 @@ class SessionCard(Widget):
                 yield Static(
                     f"{tag_icon}{tag_label}",
                     classes=f"card-tag {tag_class}",
+                    id=f"cs-{self.session.session_id[:16]}",
                 )
 
                 # Lineage badge
@@ -167,61 +165,126 @@ class SessionCard(Widget):
                 if self._is_fork_point:
                     yield Static("⑂ Fork Point", classes="badge-fork-point")
 
-                # Relative time + duration/model (right-aligned)
-                time_str = _relative_time(s.last_timestamp)
-
-                # Build compact extra info
-                extra_parts = []
-                if s.last_timestamp and s.first_timestamp and s.last_timestamp > s.first_timestamp:
-                    diff = (s.last_timestamp - s.first_timestamp).total_seconds()
-                    if diff < 60:
-                        extra_parts.append(f"{int(diff)}s")
-                    elif diff < 3600:
-                        extra_parts.append(f"{int(diff // 60)}m")
-                    else:
-                        extra_parts.append(f"{int(diff // 3600)}h{int((diff % 3600) // 60)}m")
-
-                model_str = s.model_name or ""
-                if model_str.startswith("claude-"):
-                    model_str = model_str[7:]
-                if model_str:
-                    extra_parts.append(model_str)
-
-                right_label = time_str
-                if extra_parts:
-                    right_label = f"{'·'.join(extra_parts)}  {time_str}" if time_str else '·'.join(extra_parts)
-
+                # Right-aligned time info
+                right_label = self._render_time_label()
                 if right_label:
                     yield Static(
                         f"[#78716c]{rich_escape(right_label)}[/]",
                         classes="card-time",
+                        id=f"cm-{self.session.session_id[:16]}",
                     )
 
             # ── Row 2: Intent + message count ──
             with Horizontal(classes="card-row-intent"):
-                # Intent text
-                ai_intent = self.meta.ai_intent if self.meta else None
-                first_msg = ai_intent or s.first_user_content or ""
-                if first_msg and not ai_intent:
-                    first_msg = _clean_intent_text(first_msg)
-
-                if first_msg:
-                    intent_truncated = _truncate(first_msg, 80)
-                    yield Static(
-                        f"[#b0aea5]📝 \"{rich_escape(intent_truncated)}\"[/]",
-                        classes="card-intent",
-                    )
-                else:
-                    yield Static(
-                        "[#3a3835]📝 (no content)[/]",
-                        classes="card-intent",
-                    )
-
-                # Message count (right-aligned)
+                yield Static(
+                    self._render_intent_markup(),
+                    classes="card-intent",
+                    id=f"ci-{self.session.session_id[:16]}",
+                )
                 yield Static(
                     f"[#78716c]💬 {s.message_count}[/]",
                     classes="card-msgcount",
+                    id=f"cn-{self.session.session_id[:16]}",
                 )
+
+    # ── Render helpers (shared by compose + update_data) ──────────────
+
+    def _render_title_markup(self) -> str:
+        s = self.session
+        running_prefix = "[bold #788c5d]⚡[/] " if s.is_running else ""
+        title = resolve_title(s, self.meta)
+        title_truncated = _truncate(title, 60)
+        return f"{running_prefix}[#e8e6dc]{rich_escape(title_truncated)}[/]"
+
+    def _render_time_label(self) -> str:
+        s = self.session
+        time_str = _relative_time(s.last_timestamp)
+        extra_parts = []
+        if s.last_timestamp and s.first_timestamp and s.last_timestamp > s.first_timestamp:
+            diff = (s.last_timestamp - s.first_timestamp).total_seconds()
+            if diff < 60:
+                extra_parts.append(f"{int(diff)}s")
+            elif diff < 3600:
+                extra_parts.append(f"{int(diff // 60)}m")
+            else:
+                extra_parts.append(f"{int(diff // 3600)}h{int((diff % 3600) // 60)}m")
+        model_str = s.model_name or ""
+        if model_str.startswith("claude-"):
+            model_str = model_str[7:]
+        if model_str:
+            extra_parts.append(model_str)
+        if extra_parts:
+            return f"{'·'.join(extra_parts)}  {time_str}" if time_str else '·'.join(extra_parts)
+        return time_str
+
+    def _render_intent_markup(self) -> str:
+        s = self.session
+        ai_intent = self.meta.ai_intent if self.meta else None
+        first_msg = ai_intent or s.first_user_content or ""
+        if first_msg and not ai_intent:
+            first_msg = _clean_intent_text(first_msg)
+        if first_msg:
+            intent_truncated = _truncate(first_msg, 80)
+            return f"[#b0aea5]📝 \"{rich_escape(intent_truncated)}\"[/]"
+        return "[#3a3835]📝 (no content)[/]"
+
+    def update_data(
+        self,
+        session: SessionInfo,
+        meta: "SessionMeta | None" = None,
+        last_thought: str = "",
+        lineage_type: str | None = None,
+        is_fork_point: bool = False,
+    ) -> None:
+        """Update card data in-place without rebuilding widget tree.
+
+        Uses query_one() to find and update specific Static sub-widgets.
+        """
+        self.session = session
+        self.meta = meta
+        self._lineage_type = lineage_type
+        self._is_fork_point = is_fork_point
+
+        sid = session.session_id[:16]
+
+        # Update title
+        try:
+            self.query_one(f"#ct-{sid}", Static).update(self._render_title_markup())
+        except Exception as e:
+            logger.debug("update_data title failed for %s: %s", sid, e)
+
+        # Update status tag
+        try:
+            tag_icon, tag_label, tag_class = _STATUS_TAGS.get(
+                session.status, ("?", "?", "tag-done")
+            )
+            self.query_one(f"#cs-{sid}", Static).update(f"{tag_icon}{tag_label}")
+        except Exception as e:
+            logger.debug("update_data status failed for %s: %s", sid, e)
+
+        # Update time
+        try:
+            right_label = self._render_time_label()
+            if right_label:
+                self.query_one(f"#cm-{sid}", Static).update(
+                    f"[#78716c]{rich_escape(right_label)}[/]"
+                )
+        except Exception as e:
+            logger.debug("update_data time failed for %s: %s", sid, e)
+
+        # Update intent
+        try:
+            self.query_one(f"#ci-{sid}", Static).update(self._render_intent_markup())
+        except Exception as e:
+            logger.debug("update_data intent failed for %s: %s", sid, e)
+
+        # Update message count
+        try:
+            self.query_one(f"#cn-{sid}", Static).update(
+                f"[#78716c]💬 {session.message_count}[/]"
+            )
+        except Exception as e:
+            logger.debug("update_data msgcount failed for %s: %s", sid, e)
 
     def on_click(self) -> None:
         self.post_message(self.CardSelected(self.session))

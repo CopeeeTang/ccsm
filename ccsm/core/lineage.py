@@ -18,7 +18,7 @@ from ccsm.models.session import LineageType, SessionLineage
 
 # ─── Compact summary prefixes (case-insensitive startswith) ──────────────────
 
-_COMPACT_SUMMARY_PREFIXES = (
+COMPACT_SUMMARY_PREFIXES = (
     "Here is a summary of the conversation",
     "Here's a summary of the conversation",
     "Here is a summary of our conversation",
@@ -28,7 +28,7 @@ _COMPACT_SUMMARY_PREFIXES = (
 )
 
 # Branch suffix pattern: "(branch)" or "(Branch 2)" etc., case-insensitive
-_BRANCH_SUFFIX = re.compile(r'\(branch(?:\s+\d+)?\)\s*$', re.IGNORECASE)
+BRANCH_SUFFIX_RE = re.compile(r'\(branch(?:\s+\d+)?\)\s*$', re.IGNORECASE)
 
 # Maximum gap (seconds) between sessions to consider them duplicates
 _DUPLICATE_GAP_THRESHOLD = 300  # 5 minutes
@@ -74,7 +74,7 @@ def parse_lineage_signals(
     signals = LineageSignals()
 
     # ── Check display_name for branch suffix ─────────────────────────────
-    if display_name and _BRANCH_SUFFIX.search(display_name):
+    if display_name and BRANCH_SUFFIX_RE.search(display_name):
         signals.is_fork = True
         signals.fork_hint = "display_name_branch_suffix"
 
@@ -141,7 +141,7 @@ def parse_lineage_signals(
                 if content:
                     signals.first_user_content = content
                     # Check for compact summary as first user message
-                    for prefix in _COMPACT_SUMMARY_PREFIXES:
+                    for prefix in COMPACT_SUMMARY_PREFIXES:
                         if content.startswith(prefix):
                             signals.is_fork = True
                             signals.fork_hint = "compact_summary_first_message"

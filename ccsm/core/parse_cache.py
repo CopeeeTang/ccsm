@@ -7,8 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ccsm.core.lineage import LineageSignals
-    from ccsm.models.session import JSONLMessage, SessionInfo
+    from ccsm.core.parser import FullParseResult
 
 
 def cache_key_for(path: Path) -> tuple[str, float, int]:
@@ -25,17 +24,16 @@ def cache_key_for(path: Path) -> tuple[str, float, int]:
 
 
 @lru_cache(maxsize=256)
-def _cached_parse(key: tuple) -> tuple:
+def _cached_parse(key: tuple) -> "FullParseResult":
     """Internal LRU-cached parse. Key must be a hashable tuple from cache_key_for."""
-    # key[0] is the absolute path string
-    from ccsm.core.parser import parse_session_complete
-    return parse_session_complete(Path(key[0]))
+    from ccsm.core.parser import parse_session_full
+    return parse_session_full(Path(key[0]))
 
 
-def cached_parse_complete(
+def cached_parse_full(
     path: Path,
     display_name: str | None = None,
-) -> tuple["SessionInfo", "LineageSignals", list["JSONLMessage"]]:
+) -> "FullParseResult":
     """Parse JSONL with file-level LRU cache.
 
     Cache is keyed by (abs_path, mtime_ns, size).
@@ -44,8 +42,8 @@ def cached_parse_complete(
     """
     key = cache_key_for(path)
     if key[0] == "__missing__":
-        from ccsm.core.parser import parse_session_complete
-        return parse_session_complete(path, display_name=display_name)
+        from ccsm.core.parser import parse_session_full
+        return parse_session_full(path, display_name=display_name)
     return _cached_parse(key)
 
 

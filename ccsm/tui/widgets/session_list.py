@@ -275,6 +275,10 @@ class SessionListPanel(VerticalScroll):
         self._selected_id: str | None = None
         self._active_filter: Optional[Status] = None  # None = ALL
         self._filter_bar: FilterBar | None = None
+        # Card pool for incremental updates (avoids widget rebuild churn)
+        self._card_pool: dict[str, SessionCard] = {}
+        self._visible_ids: list[str] = []  # ordered session IDs in DOM
+        self._pool_max_size: int = 200  # LRU eviction limit
 
     def load_sessions(
         self,
@@ -283,14 +287,33 @@ class SessionListPanel(VerticalScroll):
         last_thoughts: dict[str, str] | None = None,
         lineage_types: dict[str, str] | None = None,
         lineage_graph: dict | None = None,
+        force_rebuild: bool = False,
     ) -> None:
-        """Replace displayed sessions with new data."""
+        """Replace displayed sessions with new data.
+
+        Uses incremental update when possible (filter/search changes),
+        falls back to full rebuild for structural changes (worktree switch).
+        """
+        prev_session_ids = {s.session_id for s in self._sessions}
         self._sessions = sessions
         self._all_meta = all_meta or {}
         self._last_thoughts = last_thoughts or {}
         self._lineage_types = lineage_types or {}
         self._lineage_graph = lineage_graph or {}
-        self._rebuild()
+
+        new_session_ids = {s.session_id for s in sessions}
+
+        # Full rebuild when:
+        # - Forced (worktree switch)
+        # - Session set completely changed (worktree switch)
+        # - No existing cards in pool
+        if force_rebuild or not self._card_pool or not (prev_session_ids & new_session_ids):
+            self._full_rebuild()
+        elif new_session_ids <= prev_session_ids:
+            # Subset (search results) — use fast flat incremental path
+            self._incremental_update()
+        else:
+            self._rebuild()
 
     def set_active_tab(self, status: Status) -> None:
         """Switch to a specific status filter (called by keyboard shortcuts)."""
@@ -303,6 +326,10 @@ class SessionListPanel(VerticalScroll):
         self._active_filter = None
         self._rebuild()
 
+    def get_card(self, session_id: str) -> "SessionCard | None":
+        """Get a card from the pool by session ID."""
+        return self._card_pool.get(session_id)
+
     def _count_by_status(self) -> dict[Status, int]:
         """Count sessions per status (excluding NOISE unless toggled)."""
         counts: dict[Status, int] = {s: 0 for s in _STATUS_ORDER}
@@ -311,18 +338,34 @@ class SessionListPanel(VerticalScroll):
                 counts[session.status] += 1
         return counts
 
+    def _full_rebuild(self) -> None:
+        """Full clear: wipe card pool, then rebuild.
+
+        Used for worktree switches where the entire session set changes.
+        """
+        self._card_pool.clear()
+        self._rebuild()
+
     def _rebuild(self) -> None:
-        """Clear and rebuild: filter bar + session cards."""
+        """Clear children + remount with card pool reuse.
+
+        Preserves lineage group topology (required by filter switches)
+        while reusing SessionCard instances from the pool.
+        """
         self.remove_children()
 
         counts = self._count_by_status()
-
-        # Mount filter bar
         self._filter_bar = FilterBar(classes="status-tab-bar")
         self.mount(self._filter_bar)
         self._filter_bar.update_state(counts, self._active_filter)
 
         self._rebuild_list()
+
+        # Sync pool and visible ids from mounted cards
+        self._visible_ids.clear()
+        for card in self.query(SessionCard):
+            self._card_pool[card.session.session_id] = card
+            self._visible_ids.append(card.session.session_id)
 
     def _pass_filter(self, session: SessionInfo) -> bool:
         """True if this session matches the current filter."""
@@ -332,6 +375,149 @@ class SessionListPanel(VerticalScroll):
         if session.status == Status.NOISE and not self._show_noise:
             return False
         return True
+
+    def _incremental_update(self) -> None:
+        """O(ΔN) incremental card update using the card pool.
+
+        1. Compute new filtered list
+        2. Remove cards not in new list from DOM (keep in pool)
+        3. Update existing cards in-place via update_data()
+        4. Add new cards from pool or create fresh
+        5. Handle reordering via remove+remount
+        """
+        # Build session lookup
+        session_map = {s.session_id: s for s in self._sessions}
+
+        # Compute new filtered + sorted list
+        filtered = [s for s in self._sessions if self._pass_filter(s)]
+
+        if not filtered:
+            # Remove all cards, show empty state
+            for child in list(self.children):
+                if not isinstance(child, FilterBar):
+                    child.remove()
+            self._visible_ids.clear()
+            label = self._active_filter.value if self._active_filter else "matching"
+            self.mount(Static(
+                f"  No {label} sessions",
+                classes="empty-state",
+            ))
+            return
+
+        # Sort: running first → last_timestamp desc
+        def _sort_key(s: SessionInfo) -> tuple:
+            ts = s.last_timestamp
+            ts_val = ts.timestamp() if ts else 0
+            return (-int(s.is_running), -ts_val)
+
+        filtered.sort(key=_sort_key)
+        new_ids = [s.session_id for s in filtered]
+        new_id_set = set(new_ids)
+        old_id_set = set(self._visible_ids)
+
+        # Identify fork points
+        fork_parents: set[str] = set()
+        if self._lineage_graph:
+            for sid, node in self._lineage_graph.items():
+                if node.children:
+                    for child_sid in node.children:
+                        if self._lineage_types.get(child_sid) == "fork":
+                            fork_parents.add(sid)
+                            break
+
+        # Remove non-visible children (date dividers, empty states, old cards)
+        to_remove_ids = old_id_set - new_id_set
+        for child in list(self.children):
+            if isinstance(child, FilterBar):
+                continue
+            if isinstance(child, SessionCard):
+                if child.session.session_id in to_remove_ids:
+                    child.remove()
+            elif isinstance(child, (DateDivider, Static)):
+                # Remove dividers and empty states — will be rebuilt
+                child.remove()
+            else:
+                # LineageGroup or other — remove for simplicity
+                child.remove()
+
+        # Update existing cards in-place
+        for sid in (new_id_set & old_id_set):
+            card = self._card_pool.get(sid)
+            if card and sid in session_map:
+                s = session_map[sid]
+                meta = self._all_meta.get(sid)
+                card.update_data(
+                    s,
+                    meta=meta,
+                    last_thought=self._last_thoughts.get(sid, ""),
+                    lineage_type=self._lineage_types.get(sid),
+                    is_fork_point=(sid in fork_parents),
+                )
+
+        # Mount cards in correct order (remove all cards, remount in order)
+        # This is simpler and safer than trying move_child with date dividers
+        for child in list(self.children):
+            if isinstance(child, SessionCard):
+                child.remove()
+
+        prev_date = None
+        for s in filtered:
+            sid = s.session_id
+
+            # Date divider
+            if s.last_timestamp:
+                ts = s.last_timestamp
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                card_date = ts.date()
+            else:
+                card_date = None
+
+            if card_date and card_date != prev_date:
+                label = _format_date_divider(s.last_timestamp)
+                self.mount(DateDivider(label, classes="date-divider"))
+                prev_date = card_date
+
+            # Reuse from pool or create new
+            if sid in self._card_pool:
+                card = self._card_pool[sid]
+                self.mount(card)
+            else:
+                meta = self._all_meta.get(sid)
+                thought = self._last_thoughts.get(sid, "")
+                ltype = self._lineage_types.get(sid)
+                time_label = ""
+                if s.last_timestamp:
+                    t = s.last_timestamp
+                    if t.tzinfo is None:
+                        t = t.replace(tzinfo=timezone.utc)
+                    time_label = t.strftime("%H:%M")
+                card = SessionCard(
+                    s, meta=meta, last_thought=thought,
+                    lineage_type=ltype,
+                    is_fork_point=(sid in fork_parents),
+                    spine_time=time_label,
+                    spine_graph="━●",
+                )
+                self._card_pool[sid] = card
+                self.mount(card)
+
+            if sid == self._selected_id:
+                card.selected = True
+            else:
+                card.selected = False
+
+        self._visible_ids = new_ids
+
+        # LRU eviction: if pool exceeds max, drop oldest unused cards
+        if len(self._card_pool) > self._pool_max_size:
+            visible_set = set(self._visible_ids)
+            evict = [
+                k for k in self._card_pool
+                if k not in visible_set
+            ]
+            for k in evict[:len(self._card_pool) - self._pool_max_size]:
+                del self._card_pool[k]
 
     def _rebuild_list(self) -> None:
         """Render session cards grouped by lineage tree.
@@ -414,26 +600,36 @@ class SessionListPanel(VerticalScroll):
             # Single visible session in tree: render as plain card
             if len(visible_in_tree) == 1 and len(tree) == 1:
                 s = visible_in_tree[0]
-                meta = self._all_meta.get(s.session_id)
-                thought = self._last_thoughts.get(s.session_id, "")
-                ltype = self._lineage_types.get(s.session_id)
+                sid = s.session_id
+                meta = self._all_meta.get(sid)
+                thought = self._last_thoughts.get(sid, "")
+                ltype = self._lineage_types.get(sid)
 
-                time_label = ""
-                if s.last_timestamp:
-                    t = s.last_timestamp
-                    if t.tzinfo is None:
-                        t = t.replace(tzinfo=timezone.utc)
-                    time_label = t.strftime("%H:%M")
+                # Reuse from card pool if available
+                if sid in self._card_pool:
+                    card = self._card_pool[sid]
+                    card.update_data(
+                        s, meta=meta, last_thought=thought,
+                        lineage_type=ltype,
+                        is_fork_point=(sid in fork_parents),
+                    )
+                else:
+                    time_label = ""
+                    if s.last_timestamp:
+                        t = s.last_timestamp
+                        if t.tzinfo is None:
+                            t = t.replace(tzinfo=timezone.utc)
+                        time_label = t.strftime("%H:%M")
+                    card = SessionCard(
+                        s, meta=meta, last_thought=thought,
+                        lineage_type=ltype,
+                        is_fork_point=(sid in fork_parents),
+                        spine_time=time_label,
+                        spine_graph="━●",
+                    )
+                    self._card_pool[sid] = card
 
-                card = SessionCard(
-                    s, meta=meta, last_thought=thought,
-                    lineage_type=ltype,
-                    is_fork_point=(s.session_id in fork_parents),
-                    spine_time=time_label,
-                    spine_graph="━●",
-                )
-                if s.session_id == self._selected_id:
-                    card.selected = True
+                card.selected = (sid == self._selected_id)
                 self.mount(card)
             else:
                 # Multi-session tree: use LineageGroup with visible_ids mask

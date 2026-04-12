@@ -156,10 +156,13 @@ class SessionDetail(VerticalScroll):
         self.mount(Static("Select a session to view details", classes="empty-state"))
 
     def _rebuild(self) -> None:
-        """Rebuild detail panel — 4 core sections after Part 3 simplification.
+        """Rebuild detail panel with progressive loading.
 
-        Always expanded: AI DIGEST + MILESTONES
-        Collapsed by default: WHAT WAS DONE, LAST EXCHANGE
+        Frame 1 (immediate): AI Digest + Milestones (core content)
+        Frame 2 (+50ms): What Was Done + Last Exchange (collapsed sections)
+
+        This prevents blocking the UI thread while building heavy
+        Collapsible/Markdown widgets for the collapsed sections.
         """
         self.remove_children()
         s = self._session
@@ -167,16 +170,20 @@ class SessionDetail(VerticalScroll):
             self.mount(Static("Select a session to view details", classes="empty-state"))
             return
 
-        # ── 1. AI Digest (always visible) ──
+        # ── Frame 1: Always-visible core sections (immediate) ──
         self._mount_digest_section()
-
-        # ── 2. Milestones (always visible) ──
         self._mount_milestones_section()
 
-        # ── 3. What was done (collapsed, expandable) ──
-        self._mount_what_was_done_section()
+        # ── Frame 2: Collapsed sections (deferred 50ms) ──
+        # Capture session_id to avoid stale mount if user switches quickly
+        target_sid = s.session_id
+        self.set_timer(0.05, lambda: self._mount_deferred_sections(target_sid))
 
-        # ── 4. Last Exchange (collapsed, expandable, merged with where_left_off) ──
+    def _mount_deferred_sections(self, target_sid: str) -> None:
+        """Mount collapsed sections if still viewing the same session."""
+        if self._session is None or self._session.session_id != target_sid:
+            return  # User switched to a different session — skip stale mount
+        self._mount_what_was_done_section()
         self._mount_last_exchange_section()
 
     # ── AI DIGEST (five-dimension structured summary) ──────────

@@ -29,6 +29,11 @@ from pathlib import Path
 from typing import Optional
 
 from ccsm.models.session import JSONLMessage, SessionDetailData, SessionInfo
+from ccsm.core.lineage import (
+    BRANCH_SUFFIX_RE,
+    COMPACT_SUMMARY_PREFIXES,
+    LineageSignals,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -385,6 +390,273 @@ def parse_session_info(jsonl_path: Path) -> SessionInfo:
         total_output_tokens=total_output_tokens,
         last_user_message=last_user_message,
     )
+
+
+@dataclass
+class FullParseResult:
+    """Combined result from single-pass JSONL parsing.
+
+    Merges the data that was previously extracted by three separate
+    file reads: parse_session_info + parse_lineage_signals +
+    get_last_assistant_messages.
+    """
+    info: SessionInfo
+    lineage: LineageSignals
+    last_thought: str  # last assistant message content[:200]
+
+
+def parse_session_full(
+    jsonl_path: Path,
+    display_name: str | None = None,
+) -> FullParseResult:
+    """Single-pass JSONL parse: extract info + lineage + last_thought in one read.
+
+    Replaces the triple-read pattern of calling parse_session_info(),
+    parse_lineage_signals(), and get_last_assistant_messages() separately.
+    Reduces file I/O by ~66%.
+    """
+    # ── SessionInfo state ──
+    session_id = jsonl_path.stem
+    slug: Optional[str] = None
+    cwd: Optional[str] = None
+    git_branch: Optional[str] = None
+    first_timestamp: Optional[datetime] = None
+    last_timestamp: Optional[datetime] = None
+    message_count = 0
+    user_message_count = 0
+    first_user_content: Optional[str] = None
+    total_user_chars = 0
+    all_slash_commands = True
+    custom_title: Optional[str] = None
+    ai_title: Optional[str] = None
+    forked_from: Optional[str] = None
+    last_prompt: Optional[str] = None
+    compact_summaries: list[str] = []
+    model_name: Optional[str] = None
+    total_input_tokens = 0
+    total_output_tokens = 0
+    last_user_message: Optional[str] = None
+
+    # ── LineageSignals state ──
+    signals = LineageSignals()
+    if display_name and BRANCH_SUFFIX_RE.search(display_name):
+        signals.is_fork = True
+        signals.fork_hint = "display_name_branch_suffix"
+    first_user_seen = False
+
+    # ── Last thought state ──
+    last_thought = ""
+
+    # ── Single file read ──
+    if not jsonl_path.exists():
+        info = SessionInfo(
+            session_id=session_id,
+            project_dir=str(jsonl_path.parent.name),
+            jsonl_path=jsonl_path,
+        )
+        return FullParseResult(info=info, lineage=signals, last_thought="")
+
+    try:
+        with open(jsonl_path, "r", encoding="utf-8") as f:
+            for raw_line in f:
+                raw_line = raw_line.strip()
+                if not raw_line:
+                    continue
+                try:
+                    data = json.loads(raw_line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+
+                # ── worktreeSession: extract session_id ──
+                if "worktreeSession" in data:
+                    ws = data.get("worktreeSession")
+                    sid = data.get("sessionId")
+                    if sid:
+                        session_id = sid
+                        if signals.session_id is None:
+                            signals.session_id = sid
+                    elif isinstance(ws, dict):
+                        sid = ws.get("sessionId")
+                        if sid:
+                            session_id = sid
+                            if signals.session_id is None:
+                                signals.session_id = sid
+                    continue
+
+                msg_type = data.get("type", "")
+                entry_subtype = data.get("subtype", "")
+
+                # ── Lineage: session_id from any entry ──
+                if signals.session_id is None and "sessionId" in data:
+                    signals.session_id = data["sessionId"]
+
+                # ── Lineage: cwd / gitBranch (last wins) ──
+                if "cwd" in data:
+                    cwd = data["cwd"]
+                    signals.cwd = data["cwd"]
+                if "gitBranch" in data:
+                    git_branch = data["gitBranch"]
+                    signals.git_branch = data["gitBranch"]
+
+                # ── Lineage: compact boundary ──
+                if msg_type == "system" and entry_subtype in (
+                    "compact_boundary", "microcompact_boundary",
+                ):
+                    signals.compact_count += 1
+                    signals.has_compact_boundary = True
+
+                # ── Lineage: forkedFrom ──
+                if not signals.is_fork:
+                    forked_from_entry = data.get("forkedFrom")
+                    if isinstance(forked_from_entry, dict):
+                        fk_sid = forked_from_entry.get("sessionId")
+                        if fk_sid:
+                            signals.is_fork = True
+                            signals.fork_hint = "forkedFrom_field"
+                            signals.fork_source_id = fk_sid
+
+                # ── Info: forkedFrom (first occurrence) ──
+                if forked_from is None:
+                    fk = data.get("forkedFrom")
+                    if isinstance(fk, dict):
+                        fk_sid = fk.get("sessionId")
+                        if fk_sid:
+                            forked_from = fk_sid
+
+                # ── Info: special metadata types ──
+                if msg_type == "custom-title":
+                    if custom_title is None:
+                        custom_title = data.get("title") or data.get("customTitle")
+                    continue
+                if msg_type == "ai-title":
+                    if ai_title is None:
+                        ai_title = data.get("title") or data.get("aiTitle")
+                    continue
+                if msg_type == "last-prompt":
+                    lp = data.get("lastPrompt")
+                    if lp and isinstance(lp, str) and len(lp.strip()) > 2:
+                        last_prompt = lp.strip()
+                    continue
+
+                # ── Skip non-message lines ──
+                if msg_type not in _MESSAGE_TYPES:
+                    continue
+
+                # ── Info: compact summaries ──
+                if data.get("isCompactSummary"):
+                    msg_obj = data.get("message") or {}
+                    cs_content = _extract_text(msg_obj.get("content", ""))
+                    if cs_content and len(cs_content) > 50:
+                        compact_summaries.append(cs_content)
+                    continue
+
+                # Skip meta messages
+                if data.get("isMeta"):
+                    continue
+
+                # ── Count messages ──
+                message_count += 1
+
+                # ── Timestamps (shared by info + lineage) ──
+                ts = _parse_timestamp(data.get("timestamp"))
+                if ts:
+                    if first_timestamp is None or ts < first_timestamp:
+                        first_timestamp = ts
+                    if last_timestamp is None or ts > last_timestamp:
+                        last_timestamp = ts
+                    if signals.first_message_at is None or ts < signals.first_message_at:
+                        signals.first_message_at = ts
+                    if signals.last_message_at is None or ts > signals.last_message_at:
+                        signals.last_message_at = ts
+
+                if msg_type == "user":
+                    user_message_count += 1
+                    msg_obj = data.get("message") or {}
+                    msg_content = _extract_text(msg_obj.get("content", ""))
+                    total_user_chars += len(msg_content)
+
+                    if first_user_content is None and msg_content.strip():
+                        cleaned = _sanitize_content(msg_content.strip())
+                        if cleaned:
+                            first_user_content = cleaned[:200]
+
+                    stripped_content = msg_content.strip()
+                    if stripped_content and not stripped_content.startswith("/"):
+                        cleaned_last = _sanitize_content(stripped_content)
+                        if cleaned_last and len(cleaned_last) > 5:
+                            last_user_message = cleaned_last[:500]
+
+                    stripped = msg_content.strip()
+                    if stripped and not stripped.startswith("/"):
+                        all_slash_commands = False
+
+                    # ── Lineage: first user content analysis ──
+                    if not first_user_seen:
+                        first_user_seen = True
+                        # Use lineage's content extraction for consistency
+                        content_for_lineage = msg_content
+                        if content_for_lineage:
+                            signals.first_user_content = content_for_lineage
+                            for prefix in COMPACT_SUMMARY_PREFIXES:
+                                if content_for_lineage.startswith(prefix):
+                                    signals.is_fork = True
+                                    signals.fork_hint = "compact_summary_first_message"
+                                    break
+
+                elif msg_type == "assistant":
+                    msg_obj = data.get("message") or {}
+                    m = msg_obj.get("model")
+                    if m:
+                        model_name = m
+                    usage = msg_obj.get("usage")
+                    if isinstance(usage, dict):
+                        total_input_tokens += usage.get("input_tokens", 0)
+                        total_output_tokens += usage.get("output_tokens", 0)
+
+                    # ── Track last assistant message (for last_thought) ──
+                    content = _extract_text(msg_obj.get("content", ""))
+                    if content and content.strip():
+                        last_thought = content.strip()[:200]
+
+                # ── Info: sessionId / slug from message lines ──
+                sid = data.get("sessionId")
+                if sid and session_id == jsonl_path.stem:
+                    session_id = sid
+                if not slug and data.get("slug"):
+                    slug = data["slug"]
+
+    except (OSError, IOError) as e:
+        logger.warning("Failed to read %s: %s", jsonl_path, e)
+
+    if user_message_count == 0:
+        all_slash_commands = False
+
+    info = SessionInfo(
+        session_id=session_id,
+        project_dir=str(jsonl_path.parent.name),
+        jsonl_path=jsonl_path,
+        slug=slug,
+        cwd=cwd,
+        git_branch=git_branch,
+        first_timestamp=first_timestamp,
+        last_timestamp=last_timestamp,
+        message_count=message_count,
+        user_message_count=user_message_count,
+        first_user_content=first_user_content,
+        total_user_chars=total_user_chars,
+        all_slash_commands=all_slash_commands,
+        custom_title=custom_title,
+        ai_title_from_cc=ai_title,
+        forked_from_session=forked_from,
+        last_prompt=last_prompt,
+        compact_summaries=compact_summaries,
+        model_name=model_name,
+        total_input_tokens=total_input_tokens,
+        total_output_tokens=total_output_tokens,
+        last_user_message=last_user_message,
+    )
+
+    return FullParseResult(info=info, lineage=signals, last_thought=last_thought)
 
 
 def parse_session_messages(jsonl_path: Path) -> list[JSONLMessage]:

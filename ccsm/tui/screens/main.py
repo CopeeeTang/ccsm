@@ -26,11 +26,11 @@ from ccsm.core.discovery import (
     load_running_sessions,
 )
 from ccsm.core.index import IndexEntry, SessionIndex
-from ccsm.core.lineage import LineageSignals, parse_lineage_signals
+from ccsm.core.lineage import LineageSignals
 from ccsm.core.meta import load_all_meta, load_meta, load_summary, lock_title
 from ccsm.core.parser import (
     get_last_assistant_messages,
-    parse_session_info,
+    parse_session_full,
     parse_session_messages,
 )
 from ccsm.core.summarizer import (
@@ -136,6 +136,8 @@ class MainScreen(Screen):
         # Debounced detail preview
         self._hover_debounce_timer = None
         self._hovered_session: Optional[SessionInfo] = None
+        # Debounced search input (150ms)
+        self._search_timer = None
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="main-container"):
@@ -309,13 +311,26 @@ class MainScreen(Screen):
         self._parse_and_display(sessions, label)
 
     def _parse_and_display(self, sessions: list[SessionInfo], label: str) -> None:
-        """Parse session info, classify, extract thoughts — runs in thread."""
+        """Parse session info, classify, extract thoughts — runs in thread.
+
+        Uses single-pass JSONL parsing (parse_session_full) to read each
+        file only once, extracting info + lineage + last_thought together.
+        """
         try:
             parsed: list[SessionInfo] = []
+            lineage_types: dict[str, str] = {}
+            lineage_signals_local: dict[str, LineageSignals] = {}
+            last_thoughts: dict[str, str] = {}
+
             for session in sessions:
                 try:
-                    info = parse_session_info(session.jsonl_path)
-                    # Fix: sync session_id from JSONL content (file stem may differ)
+                    result = parse_session_full(
+                        session.jsonl_path,
+                        display_name=session.display_name,
+                    )
+                    info = result.info
+
+                    # Sync session_id from JSONL content
                     if info.session_id and info.session_id != session.jsonl_path.stem:
                         session.session_id = info.session_id
                     session.slug = info.slug
@@ -328,13 +343,9 @@ class MainScreen(Screen):
                     session.first_user_content = info.first_user_content
                     session.total_user_chars = info.total_user_chars
                     session.all_slash_commands = info.all_slash_commands
-
-                    # Propagate JSONL title metadata (audit fix P2-2)
                     session.custom_title = info.custom_title
                     session.ai_title_from_cc = info.ai_title_from_cc
                     session.forked_from_session = info.forked_from_session
-
-                    # Propagate new high-value fields from parser
                     session.last_prompt = info.last_prompt
                     session.compact_summaries = info.compact_summaries
                     session.model_name = info.model_name
@@ -348,45 +359,34 @@ class MainScreen(Screen):
                     if hasattr(self, '_running') and session.session_id in self._running:
                         session.is_running = True
 
+                    # ── Lineage from same parse result (no 2nd file read) ──
+                    sig = result.lineage
+                    lineage_signals_local[session.session_id] = sig
+                    if sig.last_message_at:
+                        session.last_timestamp = sig.last_message_at
+                    if sig.is_fork:
+                        lineage_types[session.session_id] = "fork"
+                    elif sig.has_compact_boundary:
+                        lineage_types[session.session_id] = "compact"
+
+                    # ── Last thought from same parse result (no 3rd file read) ──
+                    if result.last_thought:
+                        last_thoughts[session.session_id] = result.last_thought
+
                     parsed.append(session)
                 except Exception as e:
                     logger.debug("Skip session %s: %s", session.session_id, e)
 
-            # ── Sync AI titles from meta to session display_name ──
-            # If meta.name exists (previously AI-generated), prefer it over
-            # meaningless display_name like /resume, /clear
+            # Sync AI titles from meta
             for s in parsed:
                 meta = self._all_meta.get(s.session_id)
                 if meta and meta.name and _is_meaningless_title(s.display_name or ''):
                     s.display_name = meta.name
 
-            # ── Lineage scanning (pain points #1, #5, #6, #7) ──
-            # NOTE: Must run BEFORE classify_all so that corrected
-            # last_timestamp is used for status inference (M2 fix).
-            lineage_types: dict[str, str] = {}
-            lineage_signals_local: dict[str, LineageSignals] = {}
-            for s in parsed:
-                try:
-                    sig = parse_lineage_signals(
-                        s.jsonl_path,
-                        display_name=s.display_name,
-                    )
-                    lineage_signals_local[s.session_id] = sig
-                    # Fix pain point #6: use last_message_at from actual messages
-                    if sig.last_message_at:
-                        s.last_timestamp = sig.last_message_at
-                    # Track lineage type for badge display
-                    if sig.is_fork:
-                        lineage_types[s.session_id] = "fork"
-                    elif sig.has_compact_boundary:
-                        lineage_types[s.session_id] = "compact"
-                except Exception:
-                    pass
-
             # Classify AFTER lineage scanning so corrected timestamps are used
             classify_all(parsed, self._all_meta, all_running=self._running)
 
-            # ── Build search index (pain points #3, #4) ──
+            # ── Build search index ──
             index_entries = []
             for s in parsed:
                 meta = self._all_meta.get(s.session_id)
@@ -408,26 +408,16 @@ class MainScreen(Screen):
             from ccsm.core.lineage import build_lineage_graph
             graph = build_lineage_graph(lineage_signals_local)
 
-            # Enrich lineage_types from graph (graph has more accurate types)
-            # The signal-based detection above only catches compact/fork from
-            # JSONL signals; the graph also detects DUPLICATE via time overlap.
             for sid, node in graph.items():
                 if sid not in lineage_types:
-                    lt_str = node.lineage_type.value  # "root"/"compact"/"fork"/"duplicate"
+                    lt_str = node.lineage_type.value
                     if lt_str != "root":
                         lineage_types[sid] = lt_str
 
-            # Extract last thoughts for non-noise sessions (performance)
-            last_thoughts: dict[str, str] = {}
-            for session in parsed:
-                if session.status == Status.NOISE:
-                    continue
-                try:
-                    msgs = get_last_assistant_messages(session.jsonl_path, count=1)
-                    if msgs:
-                        last_thoughts[session.session_id] = msgs[-1].content[:200]
-                except Exception:
-                    pass
+            # Strip last_thoughts for NOISE sessions (save memory)
+            for s in parsed:
+                if s.status == Status.NOISE:
+                    last_thoughts.pop(s.session_id, None)
 
             self.app.call_from_thread(
                 self._on_sessions_parsed, parsed, last_thoughts, label,
@@ -737,15 +727,28 @@ class MainScreen(Screen):
             search_input.focus()
 
     def on_input_changed(self, event: Input.Changed) -> None:
-        """Filter session list as user types in search input."""
+        """Filter session list as user types in search input (150ms debounce)."""
         if event.input.id != "search-input":
             return
+        # Cancel pending search timer
+        if self._search_timer is not None:
+            self._search_timer.stop()
+            self._search_timer = None
+
         query = event.value.strip()
         if not query:
+            # Empty → restore full list immediately (no debounce)
             self._update_session_list()
             return
 
-        # Use index for full-text search (pain point #4)
+        # Debounce: schedule search after 150ms of idle
+        self._search_timer = self.set_timer(
+            0.15, lambda: self._execute_search(query)
+        )
+
+    def _execute_search(self, query: str) -> None:
+        """Run the actual search after debounce settles."""
+        self._search_timer = None
         results = self._session_index.search(query)
         matched_ids = {r.session_id for r in results}
         filtered = [s for s in self._current_sessions if s.session_id in matched_ids]
@@ -917,6 +920,23 @@ class MainScreen(Screen):
         if (self._hovered_session is not None
                 and self._hovered_session.session_id == target.session_id):
             self._load_session_detail(target)
+
+    def _update_single_card(self, session_id: str, new_title: str) -> None:
+        """O(1) pointwise card update — no full rebuild needed.
+
+        Called from batch enrich to update a single card's title.
+        """
+        panel = self.query_one(SessionListPanel)
+        card = panel.get_card(session_id)
+        if card:
+            card.session.display_name = new_title
+            meta = self._all_meta.get(session_id)
+            card.update_data(
+                card.session,
+                meta=meta,
+                last_thought=self._last_thoughts.get(session_id, ""),
+                lineage_type=self._lineage_types.get(session_id),
+            )
 
     # ── AI title generation ────────────────────────────────────────────
 
@@ -1110,9 +1130,10 @@ class MainScreen(Screen):
                 except Exception:
                     pass
 
-                # Refresh UI every 3 sessions (avoid too frequent updates)
-                if (i + 1) % 3 == 0 or i == len(candidates) - 1:
-                    self.app.call_from_thread(self._update_session_list)
+                # O(1) pointwise card update — no full rebuild
+                self.app.call_from_thread(
+                    self._update_single_card, session.session_id, ai_title
+                )
 
                 logger.info(
                     "Batch AI title [%d/%d]: %s → %r",
@@ -1124,6 +1145,3 @@ class MainScreen(Screen):
 
             except Exception as e:
                 logger.debug("Batch AI title failed for %s: %s", session.session_id[:8], e)
-
-        # Final refresh
-        self.app.call_from_thread(self._update_session_list)
