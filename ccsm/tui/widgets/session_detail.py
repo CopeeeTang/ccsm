@@ -449,14 +449,3 @@ class SessionDetail(VerticalScroll):
                 "\n".join(ctx_lines),
                 classes="detail-section-body",
             ))
-
-    # ── Generic section ──────────────────────────────────────────
-
-    def _mount_section(self, title: str, body: str) -> None:
-        section = Vertical(classes="detail-section")
-        self.mount(section)
-        section.mount(Static(
-            f"[#a8a29e]─── {rich_escape(title)} ───[/]",
-            classes="detail-section-title",
-        ))
-        section.mount(Static(body, classes="detail-section-body"))

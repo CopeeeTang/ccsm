@@ -181,11 +181,6 @@ class SessionCard(Widget):
                     classes="card-intent",
                     id=f"ci-{self.session.session_id[:16]}",
                 )
-                yield Static(
-                    f"[#78716c]💬 {s.message_count}[/]",
-                    classes="card-msgcount",
-                    id=f"cn-{self.session.session_id[:16]}",
-                )
 
     # ── Render helpers (shared by compose + update_data) ──────────────
 
@@ -225,8 +220,8 @@ class SessionCard(Widget):
             first_msg = _clean_intent_text(first_msg)
         if first_msg:
             intent_truncated = _truncate(first_msg, 80)
-            return f"[#b0aea5]📝 \"{rich_escape(intent_truncated)}\"[/]"
-        return "[#3a3835]📝 (no content)[/]"
+            return f"[#b0aea5]{rich_escape(intent_truncated)}[/]"
+        return "[#3a3835](no content)[/]"
 
     def update_data(
         self,
@@ -278,13 +273,6 @@ class SessionCard(Widget):
         except Exception as e:
             logger.debug("update_data intent failed for %s: %s", sid, e)
 
-        # Update message count
-        try:
-            self.query_one(f"#cn-{sid}", Static).update(
-                f"[#78716c]💬 {session.message_count}[/]"
-            )
-        except Exception as e:
-            logger.debug("update_data msgcount failed for %s: %s", sid, e)
 
     def on_click(self) -> None:
         self.post_message(self.CardSelected(self.session))

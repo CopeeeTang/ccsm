@@ -209,13 +209,7 @@ Screen {
     overflow: hidden;
 }
 
-.card-msgcount {
-    width: auto;
-    min-width: 6;
-    height: 1;
-    content-align: right middle;
-    color: #78716c;
-}
+/* .card-msgcount removed — widget deleted in session_card.py */
 
 /* ── Status badges ─────────────────────────────────────────────────────── */
 
@@ -391,7 +385,7 @@ Screen {
     margin: 0 1 2 1;
     padding: 1;
     height: auto;
-    border: panel #6a9bcc 40%;
+    border: none;
     background: #6a9bcc 4%;
 }
 
@@ -401,7 +395,7 @@ Screen {
     margin: 1 1 2 1;
     padding: 0;
     height: auto;
-    border: panel #d97757 40%;
+    border: none;
     background: #d97757 6%;
 }
 
@@ -477,7 +471,7 @@ Screen {
 }
 
 .det-chat-msg {
-    border: solid #3a3835;
+    border: none;
     padding: 1 2;
     margin: 0 0 0 1;
     background: #141413;
@@ -570,7 +564,7 @@ Screen {
 /* ── Collapsible Sections (WHAT WAS DONE, LAST EXCHANGE) ───────────────── */
 
 #detail-content Collapsible {
-    background: #121110;
+    background: transparent;
     border: none;
     padding: 0;
     margin-bottom: 1;
@@ -579,7 +573,7 @@ Screen {
 
 #detail-content Collapsible > CollapsibleTitle {
     color: #b0aea5;
-    background: #141413;
+    background: transparent;
     padding: 0 1;
     text-style: bold;
     height: auto;
@@ -655,12 +649,12 @@ Screen {
 .-light-theme .det-breakpoint-section { background: rgba(217,119,87, 0.08); }
 .-light-theme .det-breakpoint-badge { background: #c97040; color: #ffffff; }
 .-light-theme .detail-breakpoint-body { color: #141413; }
-.-light-theme .det-digest-section { background: rgba(106,155,204, 0.06); border: panel #6a9bcc 40%; }
+.-light-theme .det-digest-section { background: rgba(106,155,204, 0.06); }
 
-.-light-theme #detail-content Collapsible { background: #faf9f5; }
-.-light-theme #detail-content Collapsible > CollapsibleTitle { background: #f3f2eb; color: #5e5c54; }
+.-light-theme #detail-content Collapsible { background: transparent; }
+.-light-theme #detail-content Collapsible > CollapsibleTitle { background: transparent; color: #5e5c54; }
 .-light-theme #detail-content Collapsible > CollapsibleTitle:hover { background: #ebe8e1; color: #141413; }
-.-light-theme .det-chat-msg { background: #faf9f5; border: round #e6e4df; }
+.-light-theme .det-chat-msg { background: #faf9f5; }
 .-light-theme .det-chat-avatar { color: #141413; }
 .-light-theme .det-chat-avatar-user { color: #141413; }
 
@@ -681,7 +675,7 @@ Screen {
 
 .-light-theme .card-intent { color: #5e5c54; }
 .-light-theme .card-time { color: #5e5c54; }
-.-light-theme .card-msgcount { color: #5e5c54; }
+/* .-light-theme .card-msgcount removed */
 
 
 /* ── Fork Universe Block (legacy class, replaced by fork-branch-block) ── */
